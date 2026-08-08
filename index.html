@@ -7,6 +7,7 @@
 <style>
   html, body { margin:0; padding:0; overflow:hidden; background:#000; }
   #container { width:100vw; height:100vh; position:relative; overflow:hidden; }
+  #camBg { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
   #startBtn {
     position:absolute; z-index:10; left:50%; top:50%; transform:translate(-50%,-50%);
     padding:14px 24px; font:16px system-ui, sans-serif; background:#111; color:#fff;
@@ -19,7 +20,9 @@
 </style>
 </head>
 <body>
-  <div id="container"></div>
+  <div id="container">
+    <video id="camBg" autoplay muted playsinline></video>
+  </div>
   <button id="startBtn">Iniciar cámara AR</button>
   <div id="hint" hidden>Enfoca el marcador impreso con la cámara</div>
 
@@ -75,10 +78,13 @@
 
       await mindarThree.start();
 
-      // Fuerza el play() del <video> que crea MindAR por JS: en algunos navegadores
-      // (Android/Windows con varias cámaras) el atributo autoplay solo no basta.
-      if (mindarThree.video) {
-        mindarThree.video.play().catch((err) => console.error('video.play() falló:', err));
+      // El <video> interno de MindAR a veces no pinta (bug conocido: negro en
+      // Android/Windows con varias cámaras). Reusamos su MISMO stream de cámara
+      // en nuestro propio <video>, que sí sabemos que funciona.
+      const camBg = document.getElementById('camBg');
+      if (mindarThree.video && mindarThree.video.srcObject) {
+        camBg.srcObject = mindarThree.video.srcObject;
+        camBg.play().catch((err) => console.error('camBg.play() falló:', err));
       }
 
       renderer.setAnimationLoop(() => {
