@@ -74,6 +74,13 @@
       );
 
       await mindarThree.start();
+
+      // Fuerza el play() del <video> que crea MindAR por JS: en algunos navegadores
+      // (Android/Windows con varias cámaras) el atributo autoplay solo no basta.
+      if (mindarThree.video) {
+        mindarThree.video.play().catch((err) => console.error('video.play() falló:', err));
+      }
+
       renderer.setAnimationLoop(() => {
         renderer.render(scene, camera);
       });
