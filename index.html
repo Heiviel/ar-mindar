@@ -69,11 +69,10 @@
         (gltf) => {
           const model = gltf.scene;
           model.scale.set(0.3, 0.3, 0.3);
-          // El GLB trae el objeto descentrado (offset guardado desde Blender);
-          // lo recentramos para que aparezca justo sobre el marcador.
-          const box = new THREE.Box3().setFromObject(model);
-          const center = box.getCenter(new THREE.Vector3());
-          model.position.sub(center);
+          // La posición del modelo se respeta tal cual viene del GLB (relativa
+          // al origen 0,0,0 = plano del marcador). Colócalo en Blender donde
+          // quieras que aparezca — incluido offset en Z si quieres que flote —
+          // y exporta con "Apply Transform" hecho.
           anchor.group.add(model);
         },
         undefined,
