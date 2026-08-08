@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>AR Prototype - MindAR + Three.js</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; overflow:hidden; background:#000; }
+  #container { position:absolute; inset:0; }
+  #startBtn {
+    position:absolute; z-index:10; left:50%; top:50%; transform:translate(-50%,-50%);
+    padding:14px 24px; font:16px system-ui, sans-serif; background:#111; color:#fff;
+    border:1px solid #fff; border-radius:8px;
+  }
+  #hint {
+    position:absolute; z-index:10; left:0; right:0; bottom:16px; text-align:center;
+    color:#fff; font:14px system-ui, sans-serif; opacity:.8; pointer-events:none;
+  }
+</style>
+</head>
+<body>
+  <div id="container"></div>
+  <button id="startBtn">Iniciar cámara AR</button>
+  <div id="hint" hidden>Enfoca el marcador impreso con la cámara</div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+      "mind-ar": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { MindARThree } from 'mind-ar';
+
+    const startBtn = document.getElementById('startBtn');
+    const hint = document.getElementById('hint');
+
+    startBtn.addEventListener('click', async () => {
+      startBtn.remove();
+      hint.hidden = false;
+
+      // DEMO: marcador y modelo de prueba públicos de MindAR (raccoon).
+      // Para producción, sustituye por: './targets/target.mind' (tu marcador compilado)
+      const mindarThree = new MindARThree({
+        container: document.querySelector('#container'),
+        imageTargetSrc: 'https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@master/examples/image-tracking/assets/band-example/raccoon.mind',
+      });
+
+      const { renderer, scene, camera } = mindarThree;
+
+      const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1.2);
+      scene.add(light);
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      dirLight.position.set(0, 1, 1);
+      scene.add(dirLight);
+
+      const anchor = mindarThree.addAnchor(0);
+
+      // DEMO: modelo de prueba público (GLTF). Para producción, sustituye por: './models/model.glb'
+      const loader = new GLTFLoader();
+      loader.load(
+        'https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@master/examples/image-tracking/assets/band-example/raccoon/scene.gltf',
+        (gltf) => {
+          const model = gltf.scene;
+          model.scale.set(0.3, 0.3, 0.3);
+          model.position.set(0, -0.3, 0);
+          anchor.group.add(model);
+        },
+        undefined,
+        (err) => console.error('Error cargando modelo 3D:', err)
+      );
+
+      await mindarThree.start();
+      renderer.setAnimationLoop(() => {
+        renderer.render(scene, camera);
+      });
+    });
+  </script>
+</body>
+</html>
