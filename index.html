@@ -178,17 +178,33 @@
       function updateSliderRange() {
         const min = modelBox.min[clipAxis];
         const max = modelBox.max[clipAxis];
-        clipSlider.min = min;
-        clipSlider.max = max;
-        clipSlider.step = (max - min) / 200 || 0.001;
-        clipSlider.value = (min + max) / 2;
+        if (clipAxis === 'z') {
+          // Planta: slider en 0 = pieza entera; al subir el slider, el plano
+          // baja desde arriba (max.z) hacia abajo, cortando progresivamente.
+          clipSlider.min = 0;
+          clipSlider.max = max - min;
+          clipSlider.step = (max - min) / 200 || 0.001;
+          clipSlider.value = 0;
+        } else {
+          clipSlider.min = min;
+          clipSlider.max = max;
+          clipSlider.step = (max - min) / 200 || 0.001;
+          clipSlider.value = (min + max) / 2;
+        }
       }
 
       function applyClipState() {
-        const flip = flipSide[clipAxis];
-        clipPlaneLocal.normal.copy(AXES[clipAxis]).multiplyScalar(flip ? -1 : 1);
         const v = parseFloat(clipSlider.value);
-        clipPlaneLocal.constant = clipEnabled ? (flip ? v : -v) : OUTSIDE_CONSTANT;
+        if (clipAxis === 'z') {
+          const max = modelBox.max.z;
+          const planeZ = max - v;
+          clipPlaneLocal.normal.set(0, 0, -1);
+          clipPlaneLocal.constant = clipEnabled ? planeZ : OUTSIDE_CONSTANT;
+        } else {
+          const flip = flipSide[clipAxis];
+          clipPlaneLocal.normal.copy(AXES[clipAxis]).multiplyScalar(flip ? -1 : 1);
+          clipPlaneLocal.constant = clipEnabled ? (flip ? v : -v) : OUTSIDE_CONSTANT;
+        }
         capMesh.visible = clipEnabled;
         positionCap();
       }
