@@ -17,6 +17,20 @@
     position:absolute; z-index:10; left:0; right:0; bottom:16px; text-align:center;
     color:#fff; font:14px system-ui, sans-serif; opacity:.8; pointer-events:none;
   }
+  #clipPanel {
+    position:absolute; z-index:10; left:0; right:0; bottom:0;
+    background:rgba(0,0,0,.65); color:#fff; font:13px system-ui, sans-serif;
+    padding:10px 14px 14px; display:flex; flex-direction:column; gap:8px;
+  }
+  #clipPanel.hidden { display:none; }
+  #clipPanel .row { display:flex; align-items:center; gap:8px; }
+  #clipPanel button {
+    flex:1; padding:8px 4px; background:#222; color:#fff; border:1px solid #555;
+    border-radius:6px; font-size:13px;
+  }
+  #clipPanel button.active { background:#e91e63; border-color:#e91e63; }
+  #clipPanel input[type="range"] { flex:1; }
+  #clipToggle label { display:flex; align-items:center; gap:6px; }
 </style>
 </head>
 <body>
@@ -25,6 +39,20 @@
   </div>
   <button id="startBtn">Iniciar cámara AR</button>
   <div id="hint" hidden>Enfoca el marcador impreso con la cámara</div>
+
+  <div id="clipPanel" class="hidden">
+    <div class="row" id="clipToggle">
+      <label><input type="checkbox" id="clipEnabledChk" /> Sección activa</label>
+    </div>
+    <div class="row">
+      <button id="clipPlanta" data-axis="z">Planta</button>
+      <button id="clipAlzado" data-axis="x">Alzado</button>
+      <button id="clipPerfil" data-axis="y">Perfil</button>
+    </div>
+    <div class="row">
+      <input type="range" id="clipSlider" min="0" max="100" value="50" />
+    </div>
+  </div>
 
   <script type="importmap">
   {
@@ -68,6 +96,150 @@
 
       const anchor = mindarThree.addAnchor(0);
 
+      // --- Sección/corte (plano de clipping con cara sólida via stencil buffer) ---
+      renderer.localClippingEnabled = true;
+
+      const clipPlaneLocal = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+      const clipPlaneWorld = new THREE.Plane();
+      const AXES = {
+        z: new THREE.Vector3(0, 0, 1), // Planta (XY)
+        x: new THREE.Vector3(1, 0, 0), // Alzado (ZY)
+        y: new THREE.Vector3(0, 1, 0), // Perfil (XZ)
+      };
+      let clipAxis = 'z';
+      let clipEnabled = false;
+      let modelBox = null;
+      let capMesh = null;
+      const OUTSIDE_CONSTANT = 1e6; // cuando esta desactivado, el plano no corta nada
+
+      function addStencilMask(mesh) {
+        const base = new THREE.MeshBasicMaterial();
+        base.depthWrite = false;
+        base.depthTest = false;
+        base.colorWrite = false;
+        base.stencilWrite = true;
+        base.stencilFunc = THREE.AlwaysStencilFunc;
+
+        const backMat = base.clone();
+        backMat.side = THREE.BackSide;
+        backMat.clippingPlanes = [clipPlaneWorld];
+        backMat.stencilFail = THREE.IncrementWrapStencilOp;
+        backMat.stencilZFail = THREE.IncrementWrapStencilOp;
+        backMat.stencilZPass = THREE.IncrementWrapStencilOp;
+
+        const frontMat = base.clone();
+        frontMat.side = THREE.FrontSide;
+        frontMat.clippingPlanes = [clipPlaneWorld];
+        frontMat.stencilFail = THREE.DecrementWrapStencilOp;
+        frontMat.stencilZFail = THREE.DecrementWrapStencilOp;
+        frontMat.stencilZPass = THREE.DecrementWrapStencilOp;
+
+        const backMesh = new THREE.Mesh(mesh.geometry, backMat);
+        const frontMesh = new THREE.Mesh(mesh.geometry, frontMat);
+        backMesh.renderOrder = 1;
+        frontMesh.renderOrder = 2;
+        mesh.add(backMesh, frontMesh);
+      }
+
+      function addCapPlane() {
+        const sphere = modelBox.getBoundingSphere(new THREE.Sphere());
+        const size = Math.max(sphere.radius * 2.5, 0.5);
+        const geom = new THREE.PlaneGeometry(size, size);
+        const mat = new THREE.MeshStandardMaterial({
+          color: 0xe91e63,
+          metalness: 0.1,
+          roughness: 0.75,
+          side: THREE.DoubleSide,
+          stencilWrite: true,
+          stencilRef: 0,
+          stencilFunc: THREE.NotEqualStencilFunc,
+          stencilFail: THREE.ReplaceStencilOp,
+          stencilZFail: THREE.ReplaceStencilOp,
+          stencilZPass: THREE.ReplaceStencilOp,
+        });
+        capMesh = new THREE.Mesh(geom, mat);
+        capMesh.renderOrder = 3;
+        capMesh.visible = false;
+        anchor.group.add(capMesh);
+      }
+
+      function positionCap() {
+        clipPlaneLocal.coplanarPoint(capMesh.position);
+        capMesh.lookAt(
+          capMesh.position.x - clipPlaneLocal.normal.x,
+          capMesh.position.y - clipPlaneLocal.normal.y,
+          capMesh.position.z - clipPlaneLocal.normal.z
+        );
+      }
+
+      function updateSliderRange() {
+        const min = modelBox.min[clipAxis];
+        const max = modelBox.max[clipAxis];
+        clipSlider.min = min;
+        clipSlider.max = max;
+        clipSlider.step = (max - min) / 200 || 0.001;
+        clipSlider.value = (min + max) / 2;
+      }
+
+      function applyClipState() {
+        clipPlaneLocal.normal.copy(AXES[clipAxis]);
+        clipPlaneLocal.constant = clipEnabled ? -parseFloat(clipSlider.value) : OUTSIDE_CONSTANT;
+        capMesh.visible = clipEnabled;
+        positionCap();
+      }
+
+      function setupClipping(model) {
+        modelBox = new THREE.Box3().setFromObject(model);
+
+        // Recolectar primero, mutar después: si añadimos las mallas de stencil
+        // mientras traverse() está iterando, se acaba visitando también a las
+        // mallas recién creadas (y estas crean más), reventando la pila.
+        const meshes = [];
+        model.traverse((child) => {
+          if (child.isMesh) meshes.push(child);
+        });
+
+        meshes.forEach((mesh) => {
+          mesh.material.clippingPlanes = [clipPlaneWorld];
+          mesh.material.side = THREE.DoubleSide;
+          addStencilMask(mesh);
+        });
+
+        addCapPlane();
+        updateSliderRange();
+        applyClipState();
+
+        clipPanel.classList.remove('hidden');
+      }
+
+      const clipPanel = document.getElementById('clipPanel');
+      const clipEnabledChk = document.getElementById('clipEnabledChk');
+      const clipSlider = document.getElementById('clipSlider');
+      const axisButtons = [
+        document.getElementById('clipPlanta'),
+        document.getElementById('clipAlzado'),
+        document.getElementById('clipPerfil'),
+      ];
+
+      function setActiveAxisButton() {
+        axisButtons.forEach((b) => b.classList.toggle('active', b.dataset.axis === clipAxis));
+      }
+      setActiveAxisButton();
+
+      clipEnabledChk.addEventListener('change', () => {
+        clipEnabled = clipEnabledChk.checked;
+        applyClipState();
+      });
+      clipSlider.addEventListener('input', applyClipState);
+      axisButtons.forEach((btn) => {
+        btn.addEventListener('click', () => {
+          clipAxis = btn.dataset.axis;
+          setActiveAxisButton();
+          updateSliderRange();
+          applyClipState();
+        });
+      });
+
       const loader = new GLTFLoader();
       loader.load(
         './models/bola.glb',
@@ -76,6 +248,7 @@
           // Tamaño y posición se respetan tal cual vienen del GLB (calibrados
           // en Blender contra un plano de referencia = ancho del marcador).
           anchor.group.add(model);
+          setupClipping(model);
         },
         undefined,
         (err) => console.error('Error cargando modelo 3D:', err)
@@ -93,6 +266,12 @@
       }
 
       renderer.setAnimationLoop(() => {
+        // El plano de corte se define en espacio LOCAL del ancla (el marcador),
+        // pero three.js evalúa material.clippingPlanes en espacio mundo, así que
+        // hay que convertirlo cada frame según la pose actual del tracking.
+        anchor.group.updateMatrixWorld(true);
+        clipPlaneWorld.copy(clipPlaneLocal).applyMatrix4(anchor.group.matrixWorld);
+
         renderer.render(scene, camera);
       });
     });
