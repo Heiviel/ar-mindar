@@ -51,6 +51,10 @@
       const mindarThree = new MindARThree({
         container: document.querySelector('#container'),
         imageTargetSrc: './targets/bola.mind',
+        // Suavizado (OneEuroFilter) para reducir el temblor del tracking.
+        // Bajar filterMinCF = menos temblor (a cambio de algo mas de retardo al mover).
+        filterMinCF: 0.0001,
+        filterBeta: 1000,
       });
 
       const { renderer, scene, camera } = mindarThree;
