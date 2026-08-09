@@ -52,9 +52,10 @@
         container: document.querySelector('#container'),
         imageTargetSrc: './targets/bola.mind',
         // Suavizado (OneEuroFilter) para reducir el temblor del tracking.
-        // Bajar filterMinCF = menos temblor (a cambio de algo mas de retardo al mover).
-        filterMinCF: 0.0001,
-        filterBeta: 1000,
+        // Bajar filterMinCF = menos temblor. Bajar filterBeta = menos reactivo al movimiento.
+        // Al maximo de agresivo: notaras mas retardo al mover el movil rapido.
+        filterMinCF: 0.00001,
+        filterBeta: 10,
       });
 
       const { renderer, scene, camera } = mindarThree;
