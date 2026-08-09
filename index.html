@@ -51,6 +51,7 @@
     </div>
     <div class="row">
       <input type="range" id="clipSlider" min="0" max="100" value="50" />
+      <button id="clipFlip" style="flex:0 0 auto; width:auto; padding:8px 12px;">⇄ Lado</button>
     </div>
   </div>
 
@@ -111,6 +112,8 @@
       let modelBox = null;
       let capMesh = null;
       const OUTSIDE_CONSTANT = 1e6; // cuando esta desactivado, el plano no corta nada
+      // Planta siempre corta de arriba a abajo (lado fijo). Alzado/Perfil permiten elegir el lado.
+      const flipSide = { x: false, y: false, z: false };
 
       function addStencilMask(mesh) {
         const base = new THREE.MeshBasicMaterial();
@@ -182,8 +185,10 @@
       }
 
       function applyClipState() {
-        clipPlaneLocal.normal.copy(AXES[clipAxis]);
-        clipPlaneLocal.constant = clipEnabled ? -parseFloat(clipSlider.value) : OUTSIDE_CONSTANT;
+        const flip = flipSide[clipAxis];
+        clipPlaneLocal.normal.copy(AXES[clipAxis]).multiplyScalar(flip ? -1 : 1);
+        const v = parseFloat(clipSlider.value);
+        clipPlaneLocal.constant = clipEnabled ? (flip ? v : -v) : OUTSIDE_CONSTANT;
         capMesh.visible = clipEnabled;
         positionCap();
       }
@@ -215,6 +220,7 @@
       const clipPanel = document.getElementById('clipPanel');
       const clipEnabledChk = document.getElementById('clipEnabledChk');
       const clipSlider = document.getElementById('clipSlider');
+      const clipFlipBtn = document.getElementById('clipFlip');
       const axisButtons = [
         document.getElementById('clipPlanta'),
         document.getElementById('clipAlzado'),
@@ -223,6 +229,8 @@
 
       function setActiveAxisButton() {
         axisButtons.forEach((b) => b.classList.toggle('active', b.dataset.axis === clipAxis));
+        // Planta corta siempre de arriba a abajo; el flip de lado solo aplica a Alzado/Perfil.
+        clipFlipBtn.style.visibility = clipAxis === 'z' ? 'hidden' : 'visible';
       }
       setActiveAxisButton();
 
@@ -231,6 +239,10 @@
         applyClipState();
       });
       clipSlider.addEventListener('input', applyClipState);
+      clipFlipBtn.addEventListener('click', () => {
+        flipSide[clipAxis] = !flipSide[clipAxis];
+        applyClipState();
+      });
       axisButtons.forEach((btn) => {
         btn.addEventListener('click', () => {
           clipAxis = btn.dataset.axis;
