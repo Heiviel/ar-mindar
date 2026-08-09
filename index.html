@@ -68,11 +68,8 @@
         './models/bola.glb',
         (gltf) => {
           const model = gltf.scene;
-          model.scale.set(0.3, 0.3, 0.3);
-          // La posición del modelo se respeta tal cual viene del GLB (relativa
-          // al origen 0,0,0 = plano del marcador). Colócalo en Blender donde
-          // quieras que aparezca — incluido offset en Z si quieres que flote —
-          // y exporta con "Apply Transform" hecho.
+          // Tamaño y posición se respetan tal cual vienen del GLB (calibrados
+          // en Blender contra un plano de referencia = ancho del marcador).
           anchor.group.add(model);
         },
         undefined,
