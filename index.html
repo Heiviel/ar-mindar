@@ -136,7 +136,7 @@
   <div id="shadowDebug" hidden></div>
   <div id="debugLog" hidden></div>
 
-  <aside id="leftMenu" class="collapsed">
+  <aside id="leftMenu">
     <button id="menuToggle" type="button" title="Mostrar/Ocultar">☰</button>
     <h3>Panel Técnico</h3>
 
@@ -350,15 +350,6 @@
       // para que la convencion de Blender quede sin ambiguedad.
       const SHADOW_PLANE_NAME = '_shadow';
       const SHADOW_OPACITY = 0.32; // sombra mas suave, integra mejor sobre video real
-
-      // Objeto de calibracion: un plano modelado a 1:1 (mismas unidades
-      // reales que el resto del modelo) con el ancho fisico real del
-      // target, colocado donde debe quedar el modelo respecto a el. Se lee
-      // una sola vez al cargar el GLB y luego se elimina de la escena.
-      const MARKER_REF_NAME_RE = /(^|_)marker_ref(\.\d+)?$/i;
-      function isMarkerRef(mesh) {
-        return MARKER_REF_NAME_RE.test(mesh.name || '');
-      }
 
       // Acepta "_shadow" y cualquier nombre que TERMINE en "_shadow"
       // (PL_shadow, suelo_shadow) y el sufijo ".001" que anade Blender/glTF
@@ -634,7 +625,6 @@
       let lightAzimuthDeg = 140;
       let lightElevationDeg = 56;
       let shadowUpSource = 'por defecto (Y+)';
-      let displayScale = 1; // fijado por applyMarkerRefCalibration() al cargar el GLB
       // Escala mundo del anchor de MindAR. NO es 1: MindAR compone el
       // anchor con una postMatrix cuya escala es markerWidth EN PIXELES de
       // la imagen target (suele ser de cientos). Es decir, 1 unidad local
@@ -1150,99 +1140,6 @@
         applyShadowState(e.target.checked);
       });
 
-      // Escala y coloca "loadedModel" a partir de "_marker_ref": el unico
-      // numero que sale de aqui es 1 / (ancho real de _marker_ref), y el
-      // centro de _marker_ref pasa a coincidir con el origen del ancla (el
-      // centro del target, por convencion de MindAR). Se llama ANTES de
-      // anchor.group.add(loadedModel), con el modelo todavia sin padre, asi
-      // que matrixWorld de cualquier nodo interno ya esta expresada
-      // directamente en el espacio local de "model" sin tener que
-      // recorrer la jerarquia a mano.
-      // Fallback cuando no hay "_marker_ref": sea cual sea la unidad de
-      // medida en la que se modelo (metros, cm, lo que sea), esto SIEMPRE
-      // deja el modelo visible y encuadrado sobre el target. Lo que no
-      // puede darte es la proporcion real respecto al target impreso -
-      // "_marker_ref" sigue siendo el unico camino a eso.
-      //
-      // Excluye "_shadow" del calculo a proposito: ese plano suele ser mas
-      // grande que el propio modelo (para recoger la sombra completa), y si
-      // se contase, el autoencuadre se basaria en su tamano en vez de en el
-      // del modelo real, dejandolo demasiado pequeno en pantalla.
-      const AUTO_FIT_SIZE = 0.8; // fraccion del ancho del target que ocupa el lado mayor del modelo
-      function autoFitModel(model) {
-        const box = new THREE.Box3();
-        box.makeEmpty();
-        model.traverse((child) => {
-          if (!child.isMesh || isShadowPlane(child) || isCutterMesh(child)) return;
-          box.expandByObject(child);
-        });
-        if (box.isEmpty()) {
-          console.warn('[AR] El GLB no tiene geometria visible; no se puede autoencuadrar.');
-          return;
-        }
-        const size = box.getSize(new THREE.Vector3());
-        const center = box.getCenter(new THREE.Vector3());
-        const maxDim = Math.max(size.x, size.y, size.z);
-        displayScale = maxDim > 0 ? AUTO_FIT_SIZE / maxDim : 1;
-        model.scale.setScalar(displayScale);
-        model.position.copy(center).multiplyScalar(-displayScale);
-        model.updateMatrix();
-        console.warn(
-          '[AR] Sin "_marker_ref": autoencuadrado por tamano de geometria ' +
-          `(escala=${displayScale.toFixed(4)}). El tamano respecto al target NO esta ` +
-          'calibrado con precision; anade "_marker_ref" en Blender para fijarlo.'
-        );
-      }
-
-      function applyMarkerRefCalibration(model) {
-        let found = null;
-        model.traverse((child) => {
-          if (!found && child.isMesh && isMarkerRef(child)) found = child;
-        });
-
-        if (!found) {
-          // Sin "_marker_ref" no tocamos escala/posicion: se respeta la
-          // transformacion tal cual viene del GLB (calibrada a mano en
-          // Blender contra el ancho real del marcador). autoFitModel()
-          // fuerza un reencuadre generico sin relacion con el tamano fisico
-          // real del target impreso, y sustituye una calibracion que ya
-          // funcionaba por una que no.
-          console.info(
-            '[AR] Sin "_marker_ref": se respeta la escala/posicion tal cual viene del GLB.'
-          );
-          return;
-        }
-
-        if (!found.geometry.boundingBox) found.geometry.computeBoundingBox();
-        const bb = found.geometry.boundingBox.clone().applyMatrix4(found.matrixWorld);
-        const size = new THREE.Vector3();
-        bb.getSize(size);
-        const center = bb.getCenter(new THREE.Vector3());
-        const dims = [size.x, size.y, size.z].sort((a, b) => a - b);
-        const refWidth = dims[2]; // la dimension mayor = ancho real del target
-
-        if (!(refWidth > 0)) {
-          console.warn('[AR] "_marker_ref" tiene tamano nulo; se ignora la calibracion.');
-          autoFitModel(model);
-        } else {
-          displayScale = 1 / refWidth;
-          model.scale.setScalar(displayScale);
-          model.position.copy(center).multiplyScalar(-displayScale);
-          model.updateMatrix();
-          console.info(
-            `[AR] Calibrado con "_marker_ref": ancho=${refWidth.toFixed(4)} -> ` +
-            `escala=${displayScale.toFixed(4)}`
-          );
-        }
-
-        // Ya ha cumplido su funcion: fuera de la escena para siempre, no
-        // solo oculto (evita que otras funciones lo cuenten como capa,
-        // estado o mesh proyectable).
-        found.geometry.dispose();
-        forEachMeshMaterial(found, (m) => m.dispose());
-        found.parent.remove(found);
-      }
-
       function setupShadowPlanes(model) {
         const found = [];
         model.traverse((child) => {
@@ -1319,11 +1216,8 @@
         (gltf) => {
           logDebug('Modelo bola.glb cargado OK', 'ok');
           loadedModel = gltf.scene;
-          // Escala/posicion se calibran automaticamente contra "_marker_ref"
-          // (ver applyMarkerRefCalibration). Debe ejecutarse con el modelo
-          // aun sin padre para que matrixWorld sea local a "loadedModel".
-          loadedModel.updateMatrixWorld(true);
-          applyMarkerRefCalibration(loadedModel);
+          // Tamaño y posición se respetan tal cual vienen del GLB (calibrados
+          // en Blender contra un plano de referencia = ancho del marcador).
           anchor.group.add(loadedModel);
           // Activar animaciones de material del GLB si existen
           if (gltf.animations && gltf.animations.length > 0) {
