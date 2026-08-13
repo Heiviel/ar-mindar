@@ -1146,7 +1146,15 @@
         });
 
         if (!found) {
-          autoFitModel(model);
+          // Sin "_marker_ref" no tocamos escala/posicion: se respeta la
+          // transformacion tal cual viene del GLB (calibrada a mano en
+          // Blender contra el ancho real del marcador). autoFitModel()
+          // fuerza un reencuadre generico sin relacion con el tamano fisico
+          // real del target impreso, y sustituye una calibracion que ya
+          // funcionaba por una que no.
+          console.info(
+            '[AR] Sin "_marker_ref": se respeta la escala/posicion tal cual viene del GLB.'
+          );
           return;
         }
 
