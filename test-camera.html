@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Test cámara (sin AR)</title>
+<style>
+  html, body { margin:0; padding:0; background:#000; }
+  video { width:100vw; height:100vh; object-fit:cover; display:block; }
+  #status { position:fixed; top:0; left:0; right:0; color:#0f0; background:rgba(0,0,0,.6); font:14px monospace; padding:8px; z-index:10; }
+</style>
+</head>
+<body>
+  <div id="status">pulsa el botón</div>
+  <video id="v" autoplay playsinline muted></video>
+  <button id="btn" style="position:fixed;bottom:20px;left:50%;transform:translateX(-50%);padding:12px 20px;">Probar cámara</button>
+  <script>
+    const status = document.getElementById('status');
+    document.getElementById('btn').addEventListener('click', async () => {
+      try {
+        status.textContent = 'pidiendo permiso...';
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+        status.textContent = 'permiso OK, esperando vídeo...';
+        const v = document.getElementById('v');
+        v.srcObject = stream;
+        v.onloadedmetadata = () => {
+          status.textContent = `VIDEO OK: ${v.videoWidth}x${v.videoHeight}`;
+        };
+      } catch (err) {
+        status.textContent = 'ERROR: ' + err.name + ' - ' + err.message;
+      }
+    });
+  </script>
+</body>
+</html>

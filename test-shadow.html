@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Diagnostico de sombras</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #202833; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #status { position: fixed; left: 12px; bottom: 12px; color: #fff; font: 14px system-ui, sans-serif; }
+</style>
+</head>
+<body>
+<div id="status">Cargando modelo...</div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+  import * as THREE from 'three';
+  import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+  const status = document.getElementById('status');
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  document.body.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x7a8999);
+  const camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.01, 20);
+  camera.position.set(1.25, -1.6, 1.15);
+  camera.lookAt(0, 0, 0.15);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x4a5560, 0.5));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+  const azimuth = THREE.MathUtils.degToRad(140);
+  const elevation = THREE.MathUtils.degToRad(56);
+  sun.position.set(
+    Math.cos(elevation) * Math.sin(azimuth),
+    Math.cos(elevation) * Math.cos(azimuth),
+    Math.sin(elevation)
+  ).multiplyScalar(3);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.bias = -0.0005;
+  sun.shadow.normalBias = 0.005;
+  sun.shadow.camera.left = -1.5;
+  sun.shadow.camera.right = 1.5;
+  sun.shadow.camera.top = 1.5;
+  sun.shadow.camera.bottom = -1.5;
+  sun.shadow.camera.near = 0.01;
+  sun.shadow.camera.far = 8;
+  scene.add(sun, sun.target);
+
+  new GLTFLoader().load('./models/bola.glb', (gltf) => {
+    let casters = 0;
+    let receivers = 0;
+    const shadowCasters = [];
+    gltf.scene.traverse((mesh) => {
+      if (!mesh.isMesh) return;
+      if (mesh.name === '_shadow') {
+        mesh.material = new THREE.ShadowMaterial({ opacity: 0.55 });
+        mesh.material.side = THREE.DoubleSide;
+        mesh.receiveShadow = true;
+        receivers += 1;
+      } else {
+        mesh.castShadow = true;
+        shadowCasters.push(mesh);
+        casters += 1;
+      }
+    });
+    scene.add(gltf.scene);
+    renderer.render(scene, camera);
+    const gl = renderer.getContext();
+    const pixelsWithShadows = new Uint8Array(renderer.domElement.width * renderer.domElement.height * 4);
+    gl.readPixels(0, 0, renderer.domElement.width, renderer.domElement.height, gl.RGBA, gl.UNSIGNED_BYTE, pixelsWithShadows);
+    shadowCasters.forEach((mesh) => { mesh.castShadow = false; });
+    renderer.render(scene, camera);
+    const pixelsWithoutShadows = new Uint8Array(pixelsWithShadows.length);
+    gl.readPixels(0, 0, renderer.domElement.width, renderer.domElement.height, gl.RGBA, gl.UNSIGNED_BYTE, pixelsWithoutShadows);
+    shadowCasters.forEach((mesh) => { mesh.castShadow = true; });
+    let changedShadowPixels = 0;
+    for (let index = 0; index < pixelsWithShadows.length; index += 4) {
+      if (pixelsWithShadows[index] !== pixelsWithoutShadows[index]) changedShadowPixels += 1;
+    }
+    status.textContent = `GLB cargado: ${casters} proyectores, ${receivers} receptor, ${changedShadowPixels} px de sombra`;
+  }, undefined, (error) => {
+    console.error(error);
+    status.textContent = 'Error al cargar el GLB';
+  });
+
+  function render() {
+    renderer.render(scene, camera);
+    requestAnimationFrame(render);
+  }
+  render();
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+</script>
+</body>
+</html>
