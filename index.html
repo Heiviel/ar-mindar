@@ -360,8 +360,19 @@
       debugLog.scrollTop = debugLog.scrollHeight;
       (level === 'error' ? console.error : console.log)(msg);
     }
-    window.addEventListener('error', (e) => logDebug(`Error JS: ${e.message}`, 'error'));
-    window.addEventListener('unhandledrejection', (e) => logDebug(`Promesa rechazada: ${e.reason}`, 'error'));
+    // Incluir archivo:linea (y una linea de stack) es lo que permite saber si
+    // el error viene de index.html o de la libreria mind-ar/three vendorizada
+    // via CDN, y si rompe el bucle interno de tracking de MindAR (que corre
+    // en su propio rAF, aparte de renderer.setAnimationLoop).
+    window.addEventListener('error', (e) => {
+      const src = e.filename ? `${e.filename.split('/').pop()}:${e.lineno}:${e.colno}` : '?';
+      const stackLine = e.error?.stack ? e.error.stack.split('\n').slice(0, 3).join(' | ') : '';
+      logDebug(`Error JS [${src}]: ${e.message} ${stackLine}`, 'error');
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+      const stackLine = e.reason?.stack ? e.reason.stack.split('\n').slice(0, 3).join(' | ') : '';
+      logDebug(`Promesa rechazada: ${e.reason} ${stackLine}`, 'error');
+    });
 
     // Diagnostico puntual del menu lateral: para saber si el <aside> existe,
     // que tamano/posicion real tiene y si algo lo esta ocultando, sin tener
