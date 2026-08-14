@@ -35,6 +35,16 @@
   #debugLog .err { color:#ff8080; }
   #debugLog .ok { color:#8fffb0; }
 
+  #arStatus {
+    position:absolute; z-index:20; left:6px; top:6px; max-width:min(240px, 55vw);
+    padding:6px 8px; border-radius:6px;
+    background:rgba(0,0,0,.75); color:#c8eeff; font:11px/1.5 ui-monospace, monospace;
+    white-space:pre-line;
+  }
+  #arStatus .err { color:#ff8080; }
+  #arStatus .ok { color:#8fffb0; }
+  #arStatus .pending { color:#e6d27a; }
+
   #leftMenu {
     position:absolute; z-index:10; left:0; top:0; bottom:0; width:min(330px, 86vw);
     background:linear-gradient(180deg, rgba(12,18,28,.9), rgba(7,10,18,.86));
@@ -165,6 +175,7 @@
   <button id="startBtn">Iniciar cámara AR</button>
   <div id="hint" hidden>Enfoca el marcador impreso con la cámara</div>
   <div id="debugLog" hidden role="log" aria-live="polite"></div>
+  <div id="arStatus" hidden role="status" aria-live="polite"></div>
 
   <aside id="leftMenu" class="collapsed">
     <button id="menuToggle" type="button" aria-label="Mostrar/Ocultar panel técnico" aria-expanded="false" title="Mostrar/Ocultar">☰</button>
@@ -286,6 +297,23 @@
     const startBtn = document.getElementById('startBtn');
     const hint = document.getElementById('hint');
     const debugLog = document.getElementById('debugLog');
+    const arStatus = document.getElementById('arStatus');
+    // Estado permanente en pantalla (no depende de que ocurra un error):
+    // sin esto, en movil no hay forma de saber si el modelo se esta
+    // descargando, si fallo, o si el marcador nunca llega a reconocerse.
+    const statusLines = { model: 'Modelo: —', marker: 'Marcador: —' };
+    const statusLevels = { model: 'info', marker: 'info' };
+    function setStatus(key, text, level = 'info') {
+      statusLines[key] = text;
+      statusLevels[key] = level;
+      arStatus.hidden = false;
+      arStatus.innerHTML = Object.keys(statusLines)
+        .map((k) => {
+          const cls = statusLevels[k];
+          return `<span class="${cls === 'info' ? '' : cls}">${statusLines[k]}</span>`;
+        })
+        .join('\n');
+    }
     const leftMenuEl = document.getElementById('leftMenu');
     const menuToggleEl = document.getElementById('menuToggle');
     menuToggleEl.addEventListener('click', () => {
@@ -372,8 +400,15 @@
       scene.add(light);
 
       const anchor = mindarThree.addAnchor(0);
-      anchor.onTargetFound = () => logDebug('Target ENCONTRADO', 'ok');
-      anchor.onTargetLost = () => logDebug('Target perdido');
+      setStatus('marker', 'Marcador: buscando...', 'pending');
+      anchor.onTargetFound = () => {
+        logDebug('Target ENCONTRADO', 'ok');
+        setStatus('marker', 'Marcador: ENCONTRADO ✓', 'ok');
+      };
+      anchor.onTargetLost = () => {
+        logDebug('Target perdido');
+        setStatus('marker', 'Marcador: perdido, buscando...', 'pending');
+      };
 
       // La luz direccional y su target cuelgan del anchor, no de la escena:
       // asi su posicion/direccion y el frustum de sombra siguen al modelo
@@ -1295,11 +1330,13 @@
       });
 
       logDebug('Cargando modelo ./models/bola.glb ...');
+      setStatus('model', 'Modelo: cargando 0%...', 'pending');
       const loader = new GLTFLoader();
       loader.load(
         './models/bola.glb',
         (gltf) => {
           logDebug('Modelo bola.glb cargado OK', 'ok');
+          setStatus('model', 'Modelo: OK ✓', 'ok');
           loadedModel = gltf.scene;
           // Tamaño y posición se respetan tal cual vienen del GLB (calibrados
           // en Blender contra un plano de referencia = ancho del marcador).
@@ -1323,8 +1360,16 @@
           setupLayers(loadedModel);
           refreshModelBindings(false);
         },
-        undefined,
-        (err) => logDebug(`Error cargando modelo 3D: ${err?.message || err}`, 'error')
+        (progress) => {
+          if (progress.lengthComputable) {
+            const pct = Math.round((progress.loaded / progress.total) * 100);
+            setStatus('model', `Modelo: cargando ${pct}%...`, 'pending');
+          }
+        },
+        (err) => {
+          logDebug(`Error cargando modelo 3D: ${err?.message || err}`, 'error');
+          setStatus('model', `Modelo: ERROR - ${err?.message || err}`, 'err');
+        }
       );
 
       try {
