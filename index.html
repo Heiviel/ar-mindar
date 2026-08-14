@@ -305,8 +305,8 @@
     // Estado permanente en pantalla (no depende de que ocurra un error):
     // sin esto, en movil no hay forma de saber si el modelo se esta
     // descargando, si fallo, o si el marcador nunca llega a reconocerse.
-    const statusLines = { model: 'Modelo: —', marker: 'Marcador: —' };
-    const statusLevels = { model: 'info', marker: 'info' };
+    const statusLines = { model: 'Modelo: —', marker: 'Marcador: —', cam: 'Cámara: —' };
+    const statusLevels = { model: 'info', marker: 'info', cam: 'info' };
     function setStatus(key, text, level = 'info') {
       statusLines[key] = text;
       statusLevels[key] = level;
@@ -1394,6 +1394,40 @@
         logDebug(`Error iniciando camara: ${err?.message || err}`, 'error');
         throw err;
       }
+
+      // Comprueba si el <video> INTERNO de MindAR (el que usa su tracker
+      // para buscar el marcador, no #camBg) tiene tamano valido y esta
+      // pintando frames reales. Hay un bug conocido donde ese video se
+      // queda negro en algunos moviles Android aunque el stream funcione
+      // (por eso existe el truco de #camBg): si el tracker esta leyendo
+      // frames negros o de tamano 0x0, nunca va a encontrar el marcador y
+      // no salta ningun error, simplemente se queda buscando para siempre.
+      setTimeout(() => {
+        const v = mindarThree.video;
+        if (!v) { setStatus('cam', 'Cámara: sin video interno', 'err'); return; }
+        const dims = `${v.videoWidth}x${v.videoHeight} (attr ${v.width}x${v.height})`;
+        if (!v.videoWidth || !v.videoHeight) {
+          logDebug(`Video interno sin dimensiones: ${dims} readyState=${v.readyState}`, 'error');
+          setStatus('cam', `Cámara: SIN DIMENSIONES ${dims}`, 'err');
+          return;
+        }
+        try {
+          const c = document.createElement('canvas');
+          c.width = 32; c.height = 32;
+          const ctx = c.getContext('2d');
+          ctx.drawImage(v, 0, 0, 32, 32);
+          const data = ctx.getImageData(0, 0, 32, 32).data;
+          let sum = 0;
+          for (let i = 0; i < data.length; i += 4) sum += data[i] + data[i + 1] + data[i + 2];
+          const brightness = sum / (data.length / 4 * 3);
+          const isBlack = brightness < 5;
+          logDebug(`Video interno ${dims}, brillo medio=${brightness.toFixed(1)}/255`, isBlack ? 'error' : 'ok');
+          setStatus('cam', `Cámara: ${dims}, brillo=${brightness.toFixed(0)}${isBlack ? ' (¿NEGRO?)' : ''}`, isBlack ? 'err' : 'ok');
+        } catch (e) {
+          logDebug(`No se pudo leer frame del video interno: ${e?.message || e}`, 'error');
+          setStatus('cam', `Cámara: ${dims}, no se pudo leer frame`, 'err');
+        }
+      }, 1500);
 
       // Mejora progresiva: pedir foco continuo si el hardware/navegador lo
       // expone. iOS Safari no soporta focusMode via getUserMedia (no-op
