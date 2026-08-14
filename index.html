@@ -26,10 +26,6 @@
     position:absolute; z-index:10; left:0; right:0; bottom:16px; text-align:center;
     color:#fff; font:14px system-ui, sans-serif; opacity:.8; pointer-events:none;
   }
-  #shadowDebug {
-    position:absolute; z-index:10; right:12px; bottom:12px; padding:6px 8px;
-    background:rgba(0,0,0,.65); color:#fff; font:12px system-ui,sans-serif;
-  }
   #debugLog {
     position:absolute; z-index:20; right:6px; top:6px; max-width:min(360px, 60vw); max-height:40vh;
     overflow-y:auto; padding:6px 8px; border-radius:6px;
@@ -43,38 +39,65 @@
     position:absolute; z-index:10; left:0; top:0; bottom:0; width:min(330px, 86vw);
     background:linear-gradient(180deg, rgba(12,18,28,.9), rgba(7,10,18,.86));
     backdrop-filter:blur(6px); color:#e6f7ff; font:13px system-ui, sans-serif;
-    padding:12px 10px; display:flex; flex-direction:column; gap:10px;
     border-right:1px solid rgba(80,180,255,.35); transition:transform .22s ease;
     transform:translateX(0);
-    overflow-y:auto; overscroll-behavior:contain;
+    /* overflow:visible a proposito: #menuToggle sobresale del panel con
+       "right" negativo. Si este elemento tuviera overflow-y:auto, CSS fija
+       overflow-x tambien a auto aunque no se declare (regla del spec: un eje
+       "visible" se convierte en "auto" en cuanto el otro no es "visible"),
+       y eso recortaba la pestaña dejandola invisible/no clicable tanto
+       abierta como plegada. El scroll real vive en #leftMenuScroll. */
+    overflow:visible;
   }
   #leftMenu.hidden { display:none; }
-  #leftMenu.collapsed { transform:translateX(calc(-100% + 6px)); }
+  /* Con el panel replegado solo asoma una franja de 6px: el desenfoque de
+     fondo seguia calculandose sobre el video de camara aunque casi no se
+     viera, compitiendo cada frame con el render loop de three.js/MindAR.
+     Se apaga mientras esta replegado y solo se paga su coste con el panel
+     abierto. */
+  #leftMenu.collapsed { transform:translateX(calc(-100% + 6px)); backdrop-filter:none; }
   #menuToggle {
-    position:absolute; z-index:25; right:-30px; top:50%; transform:translateY(-50%);
-    width:26px; height:72px;
+    position:absolute; z-index:25; right:-40px; top:50%; transform:translateY(-50%);
+    width:40px; height:72px;
     border:1px solid rgba(120,220,255,.45); border-radius:6px;
     background:#0f1724; color:#9fe7ff; font-size:15px; line-height:24px;
     text-align:center;
   }
+  #leftMenuScroll {
+    height:100%; box-sizing:border-box;
+    padding:12px 10px; display:flex; flex-direction:column; gap:10px;
+    overflow-y:auto; overscroll-behavior:contain;
+  }
   #leftMenu h3 {
-    margin:0 36px 2px 0; font-size:14px; font-weight:700; letter-spacing:.03em; color:#b9eeff;
+    margin:0 36px 4px 0; font-size:16px; font-weight:700; letter-spacing:.03em; color:#b9eeff;
   }
   #leftMenu .group {
     border:1px solid rgba(120,220,255,.22); border-radius:8px;
     padding:8px; background:rgba(11,16,25,.55);
     display:flex; flex-direction:column; gap:8px;
   }
-  #leftMenu .groupTitle {
-    margin:0; font-size:12px; color:#8fdfff; text-transform:uppercase; letter-spacing:.08em;
+  #leftMenu .groupTitle { margin:0; }
+  /* Boton real (no <p onclick>) para que teclado y lectores de pantalla
+     puedan plegar/desplegar la seccion igual que con el raton; envuelto en
+     <h4> para que el titulo siga siendo un encabezado navegable. */
+  #leftMenu .groupToggleBtn {
+    all:unset; box-sizing:border-box; width:100%;
+    font-size:12px; color:#8fdfff; text-transform:uppercase; letter-spacing:.08em;
     cursor:pointer; user-select:none; display:flex; align-items:center; gap:6px;
   }
-  #leftMenu .groupTitle::before { content:'▾'; font-size:9px; opacity:.7; }
-  #leftMenu .group.collapsed .groupTitle::before { content:'▸'; }
-  #leftMenu .group.collapsed > *:not(.groupTitle) { display:none; }
+  #leftMenu .groupToggleBtn::before { content:'▾'; font-size:9px; opacity:.7; }
+  #leftMenu .group.collapsed .groupToggleBtn::before { content:'▸'; }
+  #leftMenu .group.collapsed .groupBody { display:none; }
+  #leftMenu .groupBody { display:flex; flex-direction:column; gap:8px; }
+
+  #leftMenu button:focus-visible,
+  #leftMenu input:focus-visible,
+  #menuToggle:focus-visible {
+    outline:2px solid #5be7ff; outline-offset:2px; border-radius:4px;
+  }
 
   @media (max-height: 480px) {
-    #leftMenu { gap:6px; padding:8px; }
+    #leftMenuScroll { gap:6px; padding:8px; }
     #leftMenu .group { padding:6px; gap:6px; }
   }
 
@@ -84,12 +107,19 @@
   #clipPanel.hidden { display:none; }
   #clipPanel .row { display:flex; align-items:center; gap:8px; }
   #clipPanel button, #stateButtons button, #viewPanel button {
-    flex:1; padding:8px 4px; background:#222; color:#fff; border:1px solid #555;
+    flex:1; min-height:40px; padding:8px 4px; background:#222; color:#fff; border:1px solid #555;
     border-radius:6px; font-size:13px;
   }
   #clipPanel button.active,
   #stateButtons button.active,
-  #viewPanel button.active { background:#0ea5cf; border-color:#5be7ff; color:#061018; }
+  #viewPanel button.active {
+    background:#0ea5cf; border-color:#5be7ff; color:#061018; font-weight:700;
+  }
+  /* El check antepuesto marca el estado activo mas alla del color, para que
+     no dependa solo de distinguir cian vs. gris (daltonismo, pantalla al sol). */
+  #clipPanel button.active::before,
+  #stateButtons button.active::before,
+  #viewPanel button.active::before { content:'✓ '; }
   #clipPanel input[type="range"] { flex:1; }
   #clipToggle label { display:flex; align-items:center; gap:6px; }
   #statePanel.hidden { display:none; }
@@ -97,7 +127,7 @@
   #layerPanel.hidden { display:none; }
   #layerButtons { display:flex; flex-direction:column; gap:6px; }
   .layerBtn {
-    display:flex; align-items:center; gap:8px;
+    display:flex; align-items:center; gap:8px; cursor:pointer;
     padding:7px 8px; background:#111d2a; color:#c8eeff;
     border:1px solid rgba(120,220,255,.3); border-radius:6px;
     font-size:13px; text-align:left;
@@ -109,13 +139,13 @@
   }
   .layerBtn.off .layerDot { background:#1e3040; }
   .layerColorPick {
-    width:22px; height:22px; padding:0; border:none;
+    width:28px; height:28px; padding:0; border:none;
     background:transparent; cursor:pointer; flex-shrink:0; margin-left:auto;
   }
   #stabilityRow { justify-content:space-between; align-items:center; }
   #stabilityRow input[type=range] { flex:1; margin:0 8px; }
   #animPanel.hidden { display:none; }
-  #animPanel button { flex:0 0 auto; width:auto; padding:6px 14px; }
+  #animPanel button { flex:0 0 auto; width:auto; min-height:40px; padding:8px 16px; }
   #wireColorRow { justify-content:space-between; }
   #wireColor {
     width:44px; height:28px; padding:0; border:none;
@@ -123,7 +153,8 @@
   }
 
   @media (max-width: 640px) {
-    #leftMenu { width:min(300px, 90vw); padding:10px 8px; }
+    #leftMenu { width:min(300px, 90vw); }
+    #leftMenuScroll { padding:10px 8px; }
   }
 </style>
 </head>
@@ -133,95 +164,108 @@
   </div>
   <button id="startBtn">Iniciar cámara AR</button>
   <div id="hint" hidden>Enfoca el marcador impreso con la cámara</div>
-  <div id="shadowDebug" hidden></div>
-  <div id="debugLog" hidden></div>
+  <div id="debugLog" hidden role="log" aria-live="polite"></div>
 
-  <aside id="leftMenu">
-    <button id="menuToggle" type="button" title="Mostrar/Ocultar">☰</button>
+  <aside id="leftMenu" class="collapsed">
+    <button id="menuToggle" type="button" aria-label="Mostrar/Ocultar panel técnico" aria-expanded="false" title="Mostrar/Ocultar">☰</button>
+    <div id="leftMenuScroll">
     <h3>Panel Técnico</h3>
 
-    <section id="statePanel" class="group hidden">
-      <p class="groupTitle">Estados</p>
-      <div id="stateButtons"></div>
-    </section>
-
-    <section class="group" id="viewPanelWrap">
-      <p class="groupTitle">Visualización</p>
-      <div class="row" id="viewPanel">
-        <button id="viewShaded" data-view="shaded">Sombreado</button>
-        <button id="viewWire" data-view="wire">Alambrico</button>
-        <button id="viewHybrid" data-view="hybrid">Somb+Alam</button>
-      </div>
-      <div class="row" id="wireColorRow">
-        <label for="wireColor">Color alambrico</label>
-        <input type="color" id="wireColor" value="#5be7ff" />
-      </div>
-      <div class="row" id="stabilityRow">
-        <span>Estabilidad</span>
-        <input type="range" id="stabilitySlider" min="1" max="10" step="1" value="5" />
-        <span id="stabilityVal">5</span>
+    <section id="statePanel" class="group hidden collapsed">
+      <h4 class="groupTitle"><button type="button" class="groupToggleBtn" aria-expanded="false" aria-controls="statePanelBody">Estados</button></h4>
+      <div class="groupBody" id="statePanelBody">
+        <div id="stateButtons"></div>
       </div>
     </section>
 
-    <section class="group" id="lightPanel">
-      <p class="groupTitle">Iluminación</p>
-      <div class="row">
-        <span style="white-space:nowrap;min-width:80px">Ambiente</span>
-        <input type="range" id="lightAmbient" min="0" max="3" step="0.05" value="1.2" style="flex:1;margin:0 8px"/>
-        <span id="lightAmbientVal">1.2</span>
-      </div>
-      <div class="row">
-        <span style="white-space:nowrap;min-width:80px">Direccional</span>
-        <input type="range" id="lightDir" min="0" max="3" step="0.05" value="0.8" style="flex:1;margin:0 8px"/>
-        <span id="lightDirVal">0.8</span>
-      </div>
-      <div class="row">
-        <span style="white-space:nowrap;min-width:80px">Azimut sol</span>
-        <input type="range" id="lightAzimuth" min="0" max="360" step="1" value="140" style="flex:1;margin:0 8px"/>
-        <span id="lightAzimuthVal">140°</span>
-      </div>
-      <div class="row">
-        <span style="white-space:nowrap;min-width:80px">Altura sol</span>
-        <input type="range" id="lightElevation" min="5" max="85" step="1" value="56" style="flex:1;margin:0 8px"/>
-        <span id="lightElevationVal">56°</span>
-      </div>
-      <div class="row">
-        <label><input type="checkbox" id="shadowsChk" /> Sombras (beta)</label>
+    <section class="group collapsed" id="viewPanelWrap">
+      <h4 class="groupTitle"><button type="button" class="groupToggleBtn" aria-expanded="false" aria-controls="viewPanelBody">Visualización</button></h4>
+      <div class="groupBody" id="viewPanelBody">
+        <div class="row" id="viewPanel">
+          <button id="viewShaded" data-view="shaded" aria-pressed="false">Sombreado</button>
+          <button id="viewWire" data-view="wire" aria-pressed="false">Alambrico</button>
+          <button id="viewHybrid" data-view="hybrid" aria-pressed="false">Somb+Alam</button>
+        </div>
+        <div class="row" id="wireColorRow">
+          <label for="wireColor">Color alambrico</label>
+          <input type="color" id="wireColor" value="#5be7ff" />
+        </div>
+        <div class="row" id="stabilityRow">
+          <label for="stabilitySlider">Estabilidad</label>
+          <input type="range" id="stabilitySlider" min="1" max="10" step="1" value="5" />
+          <span id="stabilityVal">5</span>
+        </div>
       </div>
     </section>
 
-    <section id="animPanel" class="group hidden">
-      <p class="groupTitle">Animación</p>
-      <div class="row">
-        <button id="animPlayPause">⏸ Pausa</button>
-      </div>
-      <div class="row">
-        <span style="white-space:nowrap">Tiempo</span>
-        <input type="range" id="animScrub" min="0" max="100" step="0.5" value="0" style="flex:1;margin:0 8px" />
-        <span id="animTime" style="white-space:nowrap">0.0s</span>
+    <section class="group collapsed" id="lightPanel">
+      <h4 class="groupTitle"><button type="button" class="groupToggleBtn" aria-expanded="false" aria-controls="lightPanelBody">Iluminación</button></h4>
+      <div class="groupBody" id="lightPanelBody">
+        <div class="row">
+          <label for="lightAmbient" style="white-space:nowrap;min-width:80px">Ambiente</label>
+          <input type="range" id="lightAmbient" min="0" max="3" step="0.05" value="1.2" style="flex:1;margin:0 8px"/>
+          <span id="lightAmbientVal">1.2</span>
+        </div>
+        <div class="row">
+          <label for="lightDir" style="white-space:nowrap;min-width:80px">Direccional</label>
+          <input type="range" id="lightDir" min="0" max="3" step="0.05" value="0.8" style="flex:1;margin:0 8px"/>
+          <span id="lightDirVal">0.8</span>
+        </div>
+        <div class="row">
+          <label for="lightAzimuth" style="white-space:nowrap;min-width:80px">Azimut sol</label>
+          <input type="range" id="lightAzimuth" min="0" max="360" step="1" value="140" style="flex:1;margin:0 8px"/>
+          <span id="lightAzimuthVal">140°</span>
+        </div>
+        <div class="row">
+          <label for="lightElevation" style="white-space:nowrap;min-width:80px">Altura sol</label>
+          <input type="range" id="lightElevation" min="5" max="85" step="1" value="56" style="flex:1;margin:0 8px"/>
+          <span id="lightElevationVal">56°</span>
+        </div>
+        <div class="row">
+          <label><input type="checkbox" id="shadowsChk" /> Sombras (beta)</label>
+        </div>
       </div>
     </section>
 
-    <section id="layerPanel" class="group hidden">
-      <p class="groupTitle">Capas</p>
-      <div id="layerButtons"></div>
+    <section id="animPanel" class="group hidden collapsed">
+      <h4 class="groupTitle"><button type="button" class="groupToggleBtn" aria-expanded="false" aria-controls="animPanelBody">Animación</button></h4>
+      <div class="groupBody" id="animPanelBody">
+        <div class="row">
+          <button id="animPlayPause">⏸ Pausa</button>
+        </div>
+        <div class="row">
+          <label for="animScrub" style="white-space:nowrap">Tiempo</label>
+          <input type="range" id="animScrub" min="0" max="100" step="0.5" value="0" style="flex:1;margin:0 8px" />
+          <span id="animTime" style="white-space:nowrap">0.0s</span>
+        </div>
+      </div>
     </section>
 
-    <section class="group" id="clipPanel">
-      <p class="groupTitle">Sección</p>
-      <div class="row" id="clipToggle">
-        <label><input type="checkbox" id="clipEnabledChk" /> Sección activa</label>
-      </div>
-      <div class="row">
-        <button id="clipPlanta" data-axis="z">Planta</button>
-        <button id="clipAlzado" data-axis="x">Alzado</button>
-        <button id="clipPerfil" data-axis="y">Perfil</button>
-      </div>
-      <div class="row">
-        <input type="range" id="clipSlider" min="0" max="100" value="50" />
-        <button id="clipFlip" style="flex:0 0 auto; width:auto; padding:8px 12px;">⇄ Lado</button>
+    <section id="layerPanel" class="group hidden collapsed">
+      <h4 class="groupTitle"><button type="button" class="groupToggleBtn" aria-expanded="false" aria-controls="layerPanelBody">Capas</button></h4>
+      <div class="groupBody" id="layerPanelBody">
+        <div id="layerButtons"></div>
       </div>
     </section>
+
+    <section class="group collapsed" id="clipPanel">
+      <h4 class="groupTitle"><button type="button" class="groupToggleBtn" aria-expanded="false" aria-controls="clipPanelBody">Sección</button></h4>
+      <div class="groupBody" id="clipPanelBody">
+        <div class="row" id="clipToggle">
+          <label><input type="checkbox" id="clipEnabledChk" /> Sección activa</label>
+        </div>
+        <div class="row">
+          <button id="clipPlanta" data-axis="z" aria-pressed="false">Planta</button>
+          <button id="clipAlzado" data-axis="x" aria-pressed="false">Alzado</button>
+          <button id="clipPerfil" data-axis="y" aria-pressed="false">Perfil</button>
+        </div>
+        <div class="row">
+          <input type="range" id="clipSlider" min="0" max="100" value="50" aria-label="Posición del corte" />
+          <button id="clipFlip" style="flex:0 0 auto; width:auto; padding:8px 12px;">⇄ Lado</button>
+        </div>
+      </div>
+    </section>
+    </div>
   </aside>
 
   <script type="importmap">
@@ -241,28 +285,50 @@
 
     const startBtn = document.getElementById('startBtn');
     const hint = document.getElementById('hint');
-    const shadowDebug = document.getElementById('shadowDebug');
     const debugLog = document.getElementById('debugLog');
     const leftMenuEl = document.getElementById('leftMenu');
     const menuToggleEl = document.getElementById('menuToggle');
-    menuToggleEl.addEventListener('click', () => leftMenuEl.classList.toggle('collapsed'));
+    menuToggleEl.addEventListener('click', () => {
+      const collapsed = leftMenuEl.classList.toggle('collapsed');
+      menuToggleEl.setAttribute('aria-expanded', String(!collapsed));
+    });
 
     // Secciones plegables: pulsar el titulo oculta/muestra su contenido,
     // para que quepa todo en pantallas bajas (movil en horizontal).
-    document.querySelectorAll('#leftMenu .groupTitle').forEach((title) => {
-      title.addEventListener('click', () => title.closest('.group').classList.toggle('collapsed'));
+    // Son <button> reales (no <p> con onclick) para que teclado y lectores
+    // de pantalla puedan operarlas igual que con el raton.
+    document.querySelectorAll('#leftMenu .groupToggleBtn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const group = btn.closest('.group');
+        const collapsed = group.classList.toggle('collapsed');
+        btn.setAttribute('aria-expanded', String(!collapsed));
+      });
     });
 
     // Panel de diagnostico visible en pantalla (sin depender de USB
     // debugging): cada linea queda con hora, y las de error/ok resaltadas.
+    // El prefijo ✕/✓ evita que error/ok se distingan solo por color (no
+    // fiable para daltonismo o pantalla al sol). Se limita el numero de
+    // lineas retenidas: una sesion AR larga genera eventos repetidos
+    // (target perdido/encontrado en cada perdida de tracking) y sin tope
+    // el log crecia el DOM sin limite durante toda la sesion.
+    const MAX_LOG_LINES = 200;
     function logDebug(msg, level = 'info') {
-      debugLog.hidden = false;
+      // Solo se muestra solo cuando algo va mal: en uso normal la app no
+      // debe llenar la pantalla de datos tecnicos. El historial completo
+      // (incluyendo lineas info/ok previas) se sigue guardando en el DOM,
+      // asi que si aparece un error el contexto previo sigue disponible.
+      if (level === 'error') debugLog.hidden = false;
       const line = document.createElement('div');
-      if (level === 'error') line.className = 'err';
-      if (level === 'ok') line.className = 'ok';
+      let prefix = '';
+      if (level === 'error') { line.className = 'err'; prefix = '✕ '; }
+      if (level === 'ok') { line.className = 'ok'; prefix = '✓ '; }
       const t = new Date().toLocaleTimeString();
-      line.textContent = `[${t}] ${msg}`;
+      line.textContent = `[${t}] ${prefix}${msg}`;
       debugLog.appendChild(line);
+      while (debugLog.children.length > MAX_LOG_LINES) {
+        debugLog.removeChild(debugLog.firstChild);
+      }
       debugLog.scrollTop = debugLog.scrollHeight;
       (level === 'error' ? console.error : console.log)(msg);
     }
@@ -366,7 +432,6 @@
       let clipAxis = 'z';
       let clipEnabled = false;
       let shadowsEnabled = false;
-      let pendingShadowDiagnostic = false;
       let shadowPlaneMeshes = [];
       let modelBox = null;
       const flipSide = { x: false, y: false, z: false };
@@ -630,7 +695,6 @@
       // la imagen target (suele ser de cientos). Es decir, 1 unidad local
       // del anchor == markerWidth unidades de mundo.
       let anchorWorldScale = 1;
-      let shadowFrustumRadiusWorld = 0;
       const _scaleVec = new THREE.Vector3();
 
       function readAnchorWorldScale() {
@@ -734,7 +798,6 @@
         // estuviese bien.
         const scale = readAnchorWorldScale();
         const radiusWorld = radius * scale;
-        shadowFrustumRadiusWorld = radiusWorld;
 
         const cam = dirLight.shadow.camera;
         cam.left = -radiusWorld;
@@ -774,7 +837,11 @@
       }
 
       function setActiveAxisButton() {
-        axisButtons.forEach((b) => b.classList.toggle('active', b.dataset.axis === clipAxis));
+        axisButtons.forEach((b) => {
+          const isActive = b.dataset.axis === clipAxis;
+          b.classList.toggle('active', isActive);
+          b.setAttribute('aria-pressed', String(isActive));
+        });
         clipFlipBtn.style.visibility = clipAxis === 'z' ? 'hidden' : 'visible';
       }
 
@@ -838,7 +905,9 @@
         });
 
         Object.entries(viewButtons).forEach(([k, btn]) => {
-          btn.classList.toggle('active', k === mode);
+          const isActive = k === mode;
+          btn.classList.toggle('active', isActive);
+          btn.setAttribute('aria-pressed', String(isActive));
         });
       }
 
@@ -956,7 +1025,9 @@
         stateEntries.forEach((entry, index) => {
           const btn = document.createElement('button');
           btn.textContent = entry.uiLabel;
-          btn.classList.toggle('active', index === activeStateIndex);
+          const isActive = index === activeStateIndex;
+          btn.classList.toggle('active', isActive);
+          btn.setAttribute('aria-pressed', String(isActive));
           btn.addEventListener('click', () => {
             if (activeStateIndex === index) return;
             activeStateIndex = index;
@@ -1001,12 +1072,20 @@
       function renderLayerButtons() {
         layerButtons.innerHTML = '';
         layerEntries.forEach((entry) => {
-          const btn = document.createElement('button');
+          // div[role=button], no <button>: lleva dentro un <input type="color">
+          // interactivo, y un <button> no puede contener elementos interactivos
+          // (HTML invalido; el foco/teclado del input se volvia impredecible
+          // segun navegador). tabindex + keydown reponen la semantica de boton.
+          const btn = document.createElement('div');
           btn.className = 'layerBtn' + (entry.visible ? '' : ' off');
+          btn.setAttribute('role', 'button');
+          btn.setAttribute('tabindex', '0');
+          btn.setAttribute('aria-pressed', String(entry.visible));
 
           const colorPick = document.createElement('input');
           colorPick.type = 'color';
           colorPick.className = 'layerColorPick';
+          colorPick.setAttribute('aria-label', `Color de capa: ${entry.uiLabel}`);
           colorPick.title = 'Color de la capa';
           colorPick.value = entry.color || '#ffffff';
           colorPick.addEventListener('click', (e) => e.stopPropagation());
@@ -1022,12 +1101,21 @@
 
           btn.innerHTML = `<span class="layerDot"></span>${entry.uiLabel}`;
           btn.appendChild(colorPick);
-          btn.addEventListener('click', () => {
+          const toggleLayer = () => {
             entry.visible = !entry.visible;
             entry.node.visible = entry.visible;
             btn.className = 'layerBtn' + (entry.visible ? '' : ' off');
+            btn.setAttribute('aria-pressed', String(entry.visible));
             btn.querySelector('.layerDot').style.background = entry.visible ? '#5be7ff' : '#1e3040';
             applyVisualizationMode(currentViewMode);
+          };
+          btn.addEventListener('click', toggleLayer);
+          btn.addEventListener('keydown', (e) => {
+            if (e.target !== btn) return; // no interceptar el input de color
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              toggleLayer();
+            }
           });
           layerButtons.appendChild(btn);
         });
@@ -1123,9 +1211,6 @@
         dirLight.castShadow = on;
         dirLight.shadow.autoUpdate = true;
         dirLight.shadow.needsUpdate = on;
-        pendingShadowDiagnostic = on;
-        shadowDebug.hidden = !on;
-        if (on) shadowDebug.textContent = 'Comprobando sombra proyectada...';
         shadowPlaneMeshes.forEach((child) => {
           child.receiveShadow = on;
           child.visible = on;
@@ -1318,28 +1403,6 @@
         }
 
         renderer.render(scene, camera);
-        if (pendingShadowDiagnostic && dirLight.shadow.map && shadowFrustumRadiusWorld > 0) {
-          pendingShadowDiagnostic = false;
-          const map = dirLight.shadow.map;
-          const pixels = new Uint8Array(map.width * map.height * 4);
-          renderer.readRenderTargetPixels(map, 0, 0, map.width, map.height, pixels);
-          let minimum = 255;
-          let maximum = 0;
-          for (let index = 0; index < pixels.length; index += 4) {
-            minimum = Math.min(minimum, pixels[index]);
-            maximum = Math.max(maximum, pixels[index]);
-          }
-          const hasOccluders = minimum !== maximum;
-          shadowDebug.textContent = [
-            hasOccluders
-              ? `Shadow map OK (${minimum}-${maximum})`
-              : `Shadow map VACIO (${minimum}-${maximum})`,
-            `receptores: ${shadowPlaneMeshes.length}`,
-            `up=(${shadowUp.x.toFixed(2)}, ${shadowUp.y.toFixed(2)}, ${shadowUp.z.toFixed(2)})`,
-            `escala anchor: ${anchorWorldScale.toFixed(1)}`,
-            `frustum: +-${shadowFrustumRadiusWorld.toFixed(1)}`,
-          ].join(' | ');
-        }
       });
     });
   </script>
