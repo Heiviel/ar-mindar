@@ -420,6 +420,22 @@
         // Info clave para el diagnostico actual: se fuerza visible aunque
         // no haya error, o quedaria oculta en el panel colapsado.
         debugLog.hidden = false;
+        // La version anterior del proyecto (modelo mas simple/ligero) SI
+        // funcionaba en el mismo movil. Como el codigo de tracking no ha
+        // cambiado, el sospechoso principal ahora es el peso del GLB actual
+        // (8+MB): si agota la memoria de GPU al subir texturas/geometria,
+        // el contexto WebGL puede perderse en mitad de sesion. Eso no
+        // lanza ningun error JS "normal" (no pasa por window.onerror), solo
+        // dispara el evento 'webglcontextlost' - por eso no aparecia nada
+        // en el log hasta ahora aunque fuese la causa real.
+        renderer.domElement.addEventListener('webglcontextlost', (ev) => {
+          ev.preventDefault();
+          logDebug('¡CONTEXTO WEBGL PERDIDO! (probable falta de memoria de GPU)', 'error');
+          setStatus('cam', 'Cámara: contexto WebGL perdido (sin memoria GPU)', 'err');
+        });
+        renderer.domElement.addEventListener('webglcontextrestored', () => {
+          logDebug('Contexto WebGL restaurado', 'ok');
+        });
       } catch (e) {
         logDebug(`No se pudo leer info de GPU: ${e?.message || e}`, 'error');
       }
@@ -1387,6 +1403,29 @@
             animScrub.step = (animDuration / 200).toFixed(4);
             animPanel.classList.remove('hidden');
           }
+          // Tamano real del modelo en memoria de GPU: texturas y sus
+          // dimensiones son lo que mas pesa (mucho mas que la geometria).
+          // Se compara contra la version anterior (mas simple) que si
+          // funcionaba en el mismo movil, para saber si estamos ante un
+          // problema de presupuesto de memoria GPU en gama media/baja.
+          let texPixels = 0;
+          const texSizes = [];
+          loadedModel.traverse((child) => {
+            if (!child.isMesh) return;
+            forEachMeshMaterial(child, (mat) => {
+              ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'emissiveMap', 'aoMap'].forEach((key) => {
+                const tex = mat[key];
+                if (tex?.image?.width) {
+                  texPixels += tex.image.width * tex.image.height;
+                  texSizes.push(`${key}:${tex.image.width}x${tex.image.height}`);
+                }
+              });
+            });
+          });
+          logDebug(
+            `Modelo: ${(texPixels / 1e6).toFixed(1)}Mpx texturas totales, ${texSizes.length} texturas ` +
+            `[${texSizes.slice(0, 8).join(', ')}${texSizes.length > 8 ? '...' : ''}]`
+          );
           setupShadowPlanes(loadedModel);
           computeShadowUp();
           computeShadowLightDir();
