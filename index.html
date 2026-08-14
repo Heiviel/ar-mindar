@@ -404,6 +404,26 @@
       // Exponer para que el slider de estabilidad pueda ajustarlo en tiempo real
       const filterState = { beta: 10 };
 
+      // El video interno YA vino con brillo normal (descartado el bug de
+      // "video negro"), asi que si el marcador sigue sin detectarse el
+      // sospechoso pasa a ser la GPU: el matching de MindAR corre sobre
+      // WebGL/tensorflow.js, y hay moviles Android de gama baja donde
+      // faltan extensiones (texturas float) o falla la compilacion de
+      // shaders sin lanzar ningun error JS - el tracker simplemente nunca
+      // encuentra nada. Esto deja constancia de que GPU/backend hay detras.
+      try {
+        const gl = renderer.getContext();
+        const dbgInfo = gl.getExtension('WEBGL_debug_renderer_info');
+        const gpu = dbgInfo ? gl.getParameter(dbgInfo.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+        const isWebGL2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
+        logDebug(`GPU: ${gpu} | WebGL2=${isWebGL2} | tfBackend=${window.tf?.getBackend?.() || 'n/d'}`);
+        // Info clave para el diagnostico actual: se fuerza visible aunque
+        // no haya error, o quedaria oculta en el panel colapsado.
+        debugLog.hidden = false;
+      } catch (e) {
+        logDebug(`No se pudo leer info de GPU: ${e?.message || e}`, 'error');
+      }
+
       // Iluminacion fisica + espacio de color correcto: necesario para que
       // materiales PBR, luces y sombras se vean coherentes entre si en vez
       // de con el tone mapping/gamma por defecto (mas plano y menos realista).
