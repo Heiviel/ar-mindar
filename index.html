@@ -195,7 +195,7 @@
     min-height:40px; padding:8px 12px; background:#222; color:#fff; border:1px solid #555;
     border-radius:6px; font-size:13px;
   }
-  #assetPanel .hint {
+  #leftMenu .hint {
     margin:0; font-size:11px; line-height:1.4; color:#7fa8bf; font-style:italic;
   }
   #assetPanel .pickedName {
@@ -363,6 +363,16 @@
         </div>
       </div>
     </section>
+
+    <section class="group collapsed" id="diagnosticsPanel">
+      <h4 class="groupTitle"><button type="button" class="groupToggleBtn" aria-expanded="false" aria-controls="diagnosticsPanelBody">Diagnóstico</button></h4>
+      <div class="groupBody" id="diagnosticsPanelBody">
+        <div class="row">
+          <label><input type="checkbox" id="diagnosticsChk" /> Mostrar diagnóstico en pantalla</label>
+        </div>
+        <p class="hint">Para depurar problemas de carga o de detección del marcador en un dispositivo concreto. No hace falta para uso normal — apagado por defecto.</p>
+      </div>
+    </section>
     </div>
   </aside>
 
@@ -385,6 +395,28 @@
     const hint = document.getElementById('hint');
     const debugLog = document.getElementById('debugLog');
     const arStatus = document.getElementById('arStatus');
+    const diagnosticsChk = document.getElementById('diagnosticsChk');
+
+    // El diagnostico en pantalla (arStatus + debugLog) no aporta nada al
+    // uso normal de la app - lo que importa es que se vea el modelo - asi
+    // que ahora es un interruptor manual (apagado por defecto, recordado
+    // entre sesiones) en vez de aparecer solo cuando salta un error. Sigue
+    // grabando todo internamente aunque este apagado, para que si alguien
+    // lo enciende a mitad de sesion (depurando un movil concreto) el
+    // historial previo siga ahi.
+    let diagnosticsEnabled = localStorage.getItem('arDiagnosticsEnabled') === '1';
+    function applyDiagnosticsVisibility() {
+      arStatus.hidden = !diagnosticsEnabled;
+      debugLog.hidden = !diagnosticsEnabled;
+    }
+    diagnosticsChk.checked = diagnosticsEnabled;
+    applyDiagnosticsVisibility();
+    diagnosticsChk.addEventListener('change', () => {
+      diagnosticsEnabled = diagnosticsChk.checked;
+      localStorage.setItem('arDiagnosticsEnabled', diagnosticsEnabled ? '1' : '0');
+      applyDiagnosticsVisibility();
+    });
+
     // Estado permanente en pantalla (no depende de que ocurra un error):
     // sin esto, en movil no hay forma de saber si el modelo se esta
     // descargando, si fallo, o si el marcador nunca llega a reconocerse.
@@ -393,7 +425,6 @@
     function setStatus(key, text, level = 'info') {
       statusLines[key] = text;
       statusLevels[key] = level;
-      arStatus.hidden = false;
       arStatus.innerHTML = Object.keys(statusLines)
         .map((k) => {
           const cls = statusLevels[k];
@@ -429,11 +460,9 @@
     // el log crecia el DOM sin limite durante toda la sesion.
     const MAX_LOG_LINES = 200;
     function logDebug(msg, level = 'info') {
-      // Solo se muestra solo cuando algo va mal: en uso normal la app no
-      // debe llenar la pantalla de datos tecnicos. El historial completo
-      // (incluyendo lineas info/ok previas) se sigue guardando en el DOM,
-      // asi que si aparece un error el contexto previo sigue disponible.
-      if (level === 'error') debugLog.hidden = false;
+      // La visibilidad ya no depende de si hay error: la controla solo el
+      // interruptor "Diagnostico" del menu (ver applyDiagnosticsVisibility).
+      // Se sigue grabando siempre en el DOM aunque este oculto/apagado.
       const line = document.createElement('div');
       let prefix = '';
       if (level === 'error') { line.className = 'err'; prefix = '✕ '; }
@@ -703,9 +732,6 @@
         const gpu = dbgInfo ? gl.getParameter(dbgInfo.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
         const isWebGL2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
         logDebug(`GPU: ${gpu} | WebGL2=${isWebGL2} | tfBackend=${window.tf?.getBackend?.() || 'n/d'}`);
-        // Info clave para el diagnostico actual: se fuerza visible aunque
-        // no haya error, o quedaria oculta en el panel colapsado.
-        debugLog.hidden = false;
         // La version anterior del proyecto (modelo mas simple/ligero) SI
         // funcionaba en el mismo movil. Como el codigo de tracking no ha
         // cambiado, el sospechoso principal ahora es el peso del GLB actual
