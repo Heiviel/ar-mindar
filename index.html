@@ -26,6 +26,12 @@
     position:absolute; z-index:10; left:0; right:0; bottom:16px; text-align:center;
     color:#fff; font:14px system-ui, sans-serif; opacity:.8; pointer-events:none;
   }
+  #linkStatusMsg {
+    position:absolute; z-index:10; left:50%; top:calc(50% - 46px); transform:translate(-50%,-100%);
+    max-width:min(320px, 86vw); text-align:center; margin:0;
+    color:#c8eeff; font:13px/1.4 system-ui, sans-serif;
+  }
+  #linkStatusMsg.err { color:#ff8080; }
   #debugLog {
     /* top:64px, no 6px: debajo de #arStatus (2 lineas fijas, ~46px), para
        que no se pisen estando ambos en la esquina derecha. */
@@ -170,12 +176,52 @@
     #leftMenu { width:min(300px, 90vw); }
     #leftMenuScroll { padding:10px 8px; }
   }
+
+  /* clase, no atributo hidden: #leftMenu .group ya fija display:flex con
+     mayor prioridad de cascada (origen autor) que el [hidden] del UA
+     (origen navegador), asi que el atributo nativo por si solo NO
+     ocultaria la seccion. Mismo patron que #statePanel.hidden/#layerPanel.hidden. */
+  #assetPanel.hidden { display:none; }
+  #assetPanel .row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  #assetPanel label { font-size:12px; color:#c8eeff; min-width:112px; }
+  #assetPanel input[type="file"] {
+    flex:1; min-width:0; font-size:11px; color:#c8eeff;
+  }
+  #assetPanel select {
+    flex:1; min-height:36px; padding:4px 6px; background:#111d2a; color:#e6f7ff;
+    border:1px solid rgba(120,220,255,.3); border-radius:6px; font-size:13px;
+  }
+  #assetPanel button {
+    min-height:40px; padding:8px 12px; background:#222; color:#fff; border:1px solid #555;
+    border-radius:6px; font-size:13px;
+  }
+  #assetPanel .hint {
+    margin:0; font-size:11px; line-height:1.4; color:#7fa8bf; font-style:italic;
+  }
+  #assetPanel .pickedName {
+    margin:0; font-size:11px; color:#8fffb0; word-break:break-word;
+  }
+  #assetPanel hr { border:none; border-top:1px solid rgba(120,220,255,.18); margin:2px 0; }
+  #generatedLinkBox { display:flex; flex-direction:column; gap:6px; }
+  /* especificidad ID+atributo > ID sola: gana sobre la regla de arriba
+     mientras el atributo hidden siga puesto (mismo problema que
+     #assetPanel, ver comentario en esa regla). */
+  #generatedLinkBox[hidden] { display:none; }
+  #generatedLinkBox .row { flex-wrap:nowrap; }
+  #generatedLinkInput {
+    flex:1; min-width:0; min-height:34px; padding:4px 8px; background:#0a1018; color:#8fffb0;
+    border:1px solid rgba(120,220,255,.3); border-radius:6px; font:11px ui-monospace, monospace;
+  }
+  #linkStatusMsg { margin:0; font-size:12px; }
+  #linkStatusMsg.err { color:#ff8080; }
+  #linkStatusMsg.ok { color:#8fffb0; }
 </style>
 </head>
 <body>
   <div id="container">
     <video id="camBg" autoplay muted playsinline></video>
   </div>
+  <p id="linkStatusMsg" hidden></p>
   <button id="startBtn">Iniciar cámara AR</button>
   <div id="hint" hidden>Enfoca el marcador impreso con la cámara</div>
   <div id="debugLog" hidden role="log" aria-live="polite"></div>
@@ -185,6 +231,43 @@
     <button id="menuToggle" type="button" aria-label="Mostrar/Ocultar panel técnico" aria-expanded="false" title="Mostrar/Ocultar">☰</button>
     <div id="leftMenuScroll">
     <h3>Panel Técnico</h3>
+
+    <section class="group" id="assetPanel">
+      <h4 class="groupTitle"><button type="button" class="groupToggleBtn" aria-expanded="true" aria-controls="assetPanelBody">Modelo y marcador</button></h4>
+      <div class="groupBody" id="assetPanelBody">
+        <div class="row">
+          <label for="targetFileInput">Marcador (.mind)</label>
+          <input type="file" id="targetFileInput" accept=".mind" />
+        </div>
+        <div class="row">
+          <label for="modelFileInput">Modelo (.glb)</label>
+          <input type="file" id="modelFileInput" accept=".glb" />
+        </div>
+        <p class="hint">Sin elegir nada se usa el marcador/modelo por defecto (bola). Elige archivos ANTES de pulsar "Iniciar cámara AR".</p>
+        <p class="pickedName" id="assetPickedName" hidden></p>
+        <hr />
+        <div class="row">
+          <label for="linkExpirySelect">Validez del link</label>
+          <select id="linkExpirySelect">
+            <option value="1d">1 día</option>
+            <option value="1w">1 semana</option>
+            <option value="1m" selected>1 mes</option>
+            <option value="1y">1 año</option>
+            <option value="none">Indefinido</option>
+          </select>
+        </div>
+        <div class="row">
+          <button id="generateLinkBtn" type="button">Generar link de prueba</button>
+        </div>
+        <div id="generatedLinkBox" hidden>
+          <div class="row">
+            <input type="text" id="generatedLinkInput" readonly />
+            <button id="copyLinkBtn" type="button" style="flex:0 0 auto;">Copiar</button>
+          </div>
+          <p class="hint">De momento este link solo funciona en este mismo navegador/dispositivo (se guarda localmente, sin servidor). Compartirlo de verdad con otra persona necesitará subir los archivos a un servidor — pendiente.</p>
+        </div>
+      </div>
+    </section>
 
     <section id="statePanel" class="group hidden collapsed">
       <h4 class="groupTitle"><button type="button" class="groupToggleBtn" aria-expanded="false" aria-controls="statePanelBody">Estados</button></h4>
@@ -388,6 +471,209 @@
       `display=${cs.display} visibility=${cs.visibility} opacity=${cs.opacity} z=${cs.zIndex}`
     );
 
+    // ---------------------------------------------------------------
+    // Elegir marcador/modelo propios + generar un link de prueba.
+    //
+    // De momento SIN servidor: los archivos locales elegidos se guardan
+    // en IndexedDB de ESTE navegador, y el link generado ("?share=<id>")
+    // solo funciona abriendolo en el MISMO dispositivo/navegador que lo
+    // genero. Es un primer paso funcional para probar el flujo antes de
+    // tener un servidor real donde guardar target+modelo y servirlos a
+    // cualquier persona con el link (entonces el mismo mecanismo de
+    // query params seguiria funcionando, solo cambiaria de donde se leen
+    // los archivos).
+    // ---------------------------------------------------------------
+    const targetFileInput = document.getElementById('targetFileInput');
+    const modelFileInput = document.getElementById('modelFileInput');
+    const assetPanel = document.getElementById('assetPanel');
+    const assetPickedName = document.getElementById('assetPickedName');
+    const linkExpirySelect = document.getElementById('linkExpirySelect');
+    const generateLinkBtn = document.getElementById('generateLinkBtn');
+    const generatedLinkBox = document.getElementById('generatedLinkBox');
+    const generatedLinkInput = document.getElementById('generatedLinkInput');
+    const copyLinkBtn = document.getElementById('copyLinkBtn');
+    const linkStatusMsg = document.getElementById('linkStatusMsg');
+
+    const DEFAULT_TARGET_SRC = './targets/bola.mind';
+    const DEFAULT_MODEL_SRC = './models/bola.glb';
+    let resolvedTargetSrc = DEFAULT_TARGET_SRC;
+    let resolvedModelSrc = DEFAULT_MODEL_SRC;
+    let pickedTargetFile = null;
+    let pickedModelFile = null;
+    let isViewMode = false;
+
+    function updatePickedNameHint() {
+      const parts = [];
+      if (pickedTargetFile) parts.push(`marcador: ${pickedTargetFile.name}`);
+      if (pickedModelFile) parts.push(`modelo: ${pickedModelFile.name}`);
+      assetPickedName.hidden = !parts.length;
+      assetPickedName.textContent = parts.length ? `Usando ${parts.join(', ')}` : '';
+    }
+
+    targetFileInput.addEventListener('change', () => {
+      const file = targetFileInput.files?.[0];
+      if (!file) return;
+      pickedTargetFile = file;
+      resolvedTargetSrc = URL.createObjectURL(file);
+      updatePickedNameHint();
+    });
+    modelFileInput.addEventListener('change', () => {
+      const file = modelFileInput.files?.[0];
+      if (!file) return;
+      pickedModelFile = file;
+      resolvedModelSrc = URL.createObjectURL(file);
+      updatePickedNameHint();
+    });
+
+    // Guardado local (IndexedDB): unica forma de que un "link" pueda
+    // volver a encontrar un archivo elegido con <input type="file">,
+    // porque esos archivos no tienen ninguna URL publica.
+    function openShareDB() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open('arMindarShare', 1);
+        req.onupgradeneeded = () => {
+          req.result.createObjectStore('links', { keyPath: 'id' });
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+    function saveShareLink(record) {
+      return openShareDB().then((db) => new Promise((resolve, reject) => {
+        const tx = db.transaction('links', 'readwrite');
+        tx.objectStore('links').put(record);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      }));
+    }
+    function loadShareLink(id) {
+      return openShareDB().then((db) => new Promise((resolve, reject) => {
+        const tx = db.transaction('links', 'readonly');
+        const req = tx.objectStore('links').get(id);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
+      }));
+    }
+
+    const DAY_MS = 86400000;
+    const EXPIRY_MS = { '1d': DAY_MS, '1w': 7 * DAY_MS, '1m': 30 * DAY_MS, '1y': 365 * DAY_MS };
+    function computeExpiresAt(code) {
+      if (code === 'none' || !EXPIRY_MS[code]) return null;
+      return Date.now() + EXPIRY_MS[code];
+    }
+
+    generateLinkBtn.addEventListener('click', async () => {
+      generateLinkBtn.disabled = true;
+      generateLinkBtn.textContent = 'Generando...';
+      try {
+        const expiresAt = computeExpiresAt(linkExpirySelect.value);
+        const url = new URL(location.href);
+        url.search = '';
+        url.hash = '';
+        if (pickedTargetFile || pickedModelFile) {
+          // Alguno de los dos es un archivo local elegido a mano: se
+          // guarda en IndexedDB porque no hay ninguna URL publica desde
+          // la que servirlo todavia (eso necesita servidor).
+          const id = crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+          await saveShareLink({
+            id,
+            targetBlob: pickedTargetFile || null,
+            modelBlob: pickedModelFile || null,
+            targetName: pickedTargetFile?.name || null,
+            modelName: pickedModelFile?.name || null,
+            createdAt: Date.now(),
+            expiresAt,
+          });
+          url.searchParams.set('share', id);
+        } else {
+          // Sin archivos propios: usa los que ya estan publicados en el
+          // servidor (targets/models por defecto), asi el link SI abre
+          // en cualquier dispositivo, no solo en este navegador.
+          url.searchParams.set('target', DEFAULT_TARGET_SRC.replace(/^\.\//, ''));
+          url.searchParams.set('model', DEFAULT_MODEL_SRC.replace(/^\.\//, ''));
+          if (expiresAt) url.searchParams.set('exp', String(expiresAt));
+        }
+        generatedLinkInput.value = url.toString();
+        generatedLinkBox.hidden = false;
+      } catch (err) {
+        logDebug(`No se pudo generar el link: ${err?.message || err}`, 'error');
+      } finally {
+        generateLinkBtn.disabled = false;
+        generateLinkBtn.textContent = 'Generar link de prueba';
+      }
+    });
+
+    copyLinkBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(generatedLinkInput.value);
+      } catch {
+        generatedLinkInput.select();
+        document.execCommand('copy');
+      }
+      copyLinkBtn.textContent = 'Copiado ✓';
+      setTimeout(() => { copyLinkBtn.textContent = 'Copiar'; }, 1500);
+    });
+
+    // Resuelve que marcador/modelo tocan ANTES de mostrar "Iniciar",
+    // segun los parametros de la URL: "?share=<id>" para archivos locales
+    // guardados en IndexedDB, o "?target=...&model=..." para rutas ya
+    // publicadas en el servidor; ambos aceptan "&exp=<timestamp>".
+    async function resolveAssetsFromUrl() {
+      const params = new URLSearchParams(location.search);
+      const shareId = params.get('share');
+      const targetParam = params.get('target');
+      const modelParam = params.get('model');
+
+      if (shareId) {
+        startBtn.hidden = true;
+        linkStatusMsg.hidden = false;
+        linkStatusMsg.textContent = 'Cargando enlace compartido...';
+        let record = null;
+        try {
+          record = await loadShareLink(shareId);
+        } catch (err) {
+          logDebug(`Error leyendo link compartido: ${err?.message || err}`, 'error');
+        }
+        if (!record) {
+          linkStatusMsg.textContent =
+            'Este link no esta disponible en este navegador. Los links de prueba solo ' +
+            'funcionan en el mismo dispositivo/navegador donde se generaron (todavia sin servidor).';
+          linkStatusMsg.classList.add('err');
+          return;
+        }
+        if (record.expiresAt && Date.now() > record.expiresAt) {
+          linkStatusMsg.textContent = `Este link ha caducado (válido hasta ${new Date(record.expiresAt).toLocaleString()}).`;
+          linkStatusMsg.classList.add('err');
+          return;
+        }
+        if (record.targetBlob) resolvedTargetSrc = URL.createObjectURL(record.targetBlob);
+        if (record.modelBlob) resolvedModelSrc = URL.createObjectURL(record.modelBlob);
+        isViewMode = true;
+        assetPanel.classList.add('hidden');
+        linkStatusMsg.textContent = `Viendo: ${record.modelName || 'modelo compartido'}`;
+        startBtn.hidden = false;
+        return;
+      }
+
+      if (targetParam || modelParam) {
+        const expParam = params.get('exp');
+        if (expParam && expParam !== 'none' && Date.now() > Number(expParam)) {
+          startBtn.hidden = true;
+          linkStatusMsg.hidden = false;
+          linkStatusMsg.textContent = `Este link ha caducado (válido hasta ${new Date(Number(expParam)).toLocaleString()}).`;
+          linkStatusMsg.classList.add('err');
+          return;
+        }
+        const normalize = (p) => (p.startsWith('.') || p.startsWith('/') || p.includes('://') ? p : `./${p}`);
+        if (targetParam) resolvedTargetSrc = normalize(targetParam);
+        if (modelParam) resolvedModelSrc = normalize(modelParam);
+        isViewMode = true;
+        assetPanel.classList.add('hidden');
+      }
+    }
+
+    await resolveAssetsFromUrl();
+
     startBtn.addEventListener('click', async () => {
       startBtn.remove();
       hint.hidden = false;
@@ -395,7 +681,7 @@
 
       const mindarThree = new MindARThree({
         container: document.querySelector('#container'),
-        imageTargetSrc: './targets/bola.mind',
+        imageTargetSrc: resolvedTargetSrc,
         filterMinCF: 0.00001,
         filterBeta: 10,
       });
@@ -1380,13 +1666,13 @@
         }
       });
 
-      logDebug('Cargando modelo ./models/bola.glb ...');
+      logDebug(`Cargando modelo ${pickedModelFile?.name || resolvedModelSrc} ...`);
       setStatus('model', 'Modelo: cargando 0%...', 'pending');
       const loader = new GLTFLoader();
       loader.load(
-        './models/bola.glb',
+        resolvedModelSrc,
         (gltf) => {
-          logDebug('Modelo bola.glb cargado OK', 'ok');
+          logDebug(`Modelo ${pickedModelFile?.name || resolvedModelSrc} cargado OK`, 'ok');
           setStatus('model', 'Modelo: OK ✓', 'ok');
           loadedModel = gltf.scene;
           // Tamaño y posición se respetan tal cual vienen del GLB (calibrados
