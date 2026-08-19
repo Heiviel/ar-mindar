@@ -3,7 +3,33 @@
 Cómo preparar el `.blend` y qué puede controlar luego quien use la app. Documento vivo, se irá
 ampliando.
 
-## 1. Varias versiones/fases que se pueden alternar (Estados)
+## 1. Escala y posición respecto al marcador (`_marker_ref`)
+
+Este es el primer problema a resolver con cualquier modelo nuevo: por defecto la app no tiene
+forma de saber qué tamaño real tiene tu marcador impreso ni dónde quieres que el modelo quede
+apoyado sobre él. Sin esto, el modelo puede salir gigante, minúsculo o descolocado — y esto se
+arregla SIN tener que achicar ni mover el modelo en sí.
+
+**Qué hacer en Blender:**
+
+1. Crea un plano o una caja simple, con el tamaño REAL de tu marcador impreso, medido en las
+   mismas unidades que uses para modelar (si modelas en metros y el marcador impreso mide 30cm
+   de ancho, esa pieza debe medir 0.3 en su lado más largo).
+2. Colócala donde quieras que el marcador quede, en la realidad, respecto al modelo — por
+   ejemplo pegada a la base de una escalera, o al lado de una fachada. El centro de esa pieza es
+   el punto exacto donde luego "engancha" el marcador en AR.
+3. Nómbrala con `_marker_ref` en el nombre (ej. `plano_marker_ref`).
+4. Exporta normal. La app la usa una sola vez al cargar el modelo para calcular escala y
+   posición, y luego la borra sola — nunca se llega a ver.
+
+Con esto puedes tener un modelo tan grande como una escalera real y un marcador de tamaño A4, y
+que en AR aparezca a su tamaño real en vez de encogido para caber entero en pantalla.
+
+**Si no pones `_marker_ref`**: la app encuadra el modelo automáticamente para que se vea entero y
+razonable sobre el marcador — sirve para pruebas rápidas, pero el tamaño respecto al marcador
+real NO está calibrado (no representa proporciones reales).
+
+## 2. Varias versiones/fases que se pueden alternar (Estados)
 
 ¿Quieres que la persona que use la app pueda pulsar un botón y cambiar entre, por ejemplo,
 "solo estructura" y "con fachada"?
@@ -15,7 +41,7 @@ ampliando.
 - Hacen falta mínimo 2 para que aparezca el selector "Estados" en el menú.
 - Solo se ve una versión a la vez; el resto se oculta sola.
 
-## 2. Partes que se encienden/apagan sueltas, con su propio color (Capas)
+## 3. Partes que se encienden/apagan sueltas, con su propio color (Capas)
 
 Para partes del modelo que se puedan mostrar/ocultar de forma independiente (no excluyentes
 entre sí, a diferencia de los Estados) y a las que además se les pueda cambiar el color desde
@@ -25,12 +51,12 @@ la app:
 - Cada una aparece como un interruptor independiente en "Capas", con su propio selector de
   color.
 
-## 3. Plano que recibe la sombra del modelo
+## 4. Plano que recibe la sombra del modelo
 
 - Crea un plano (del tamaño que quieras que abarque la sombra) y llámalo `_shadow`.
 - Da igual dónde lo coloques dentro de la jerarquía del `.blend`, se encuentra igual.
 
-## 4. Relleno sólido al hacer un corte (Sección) — opcional, avanzado
+## 5. Relleno sólido al hacer un corte (Sección) — opcional, avanzado
 
 La app tiene una herramienta de corte (Planta/Alzado/Perfil): mueves un plano por el modelo y
 todo lo que queda a un lado se oculta. Donde el plano atraviesa el modelo, la app intenta pintar
@@ -50,19 +76,20 @@ solo aparece rellenando el corte, justo por donde pasa el plano, en el sitio exa
 
 Si no te importa que el relleno del corte no sea perfecto, puedes ignorar esto por completo.
 
-## 5. Animación
+## 6. Animación
 
 Cualquier animación que metas en Blender se reproduce sola en cuanto carga el modelo. No hace
 falta nombrarla de ninguna forma especial.
 
-## 6. Reglas rápidas de nombres
+## 7. Reglas rápidas de nombres
 
 - `st` y `ly` van pegados al número, sin espacio ni guion: `st1`, no `st 1` ni `st-1`.
 - El texto del botón (opcional) va después de un guion bajo: `st2_fachada`.
 - Si un `st..`/`ly..` queda dentro de otro `st..`/`ly..`, solo cuenta el de fuera — evita
   anidarlos.
+- Solo puede haber un `_marker_ref` por modelo; si hay varios, se usa el primero que encuentre.
 
-## 7. Qué controla el usuario directamente en la app (nada que preparar en Blender)
+## 8. Qué controla el usuario directamente en la app (nada que preparar en Blender)
 
 - **Estados / Capas**: los botones e interruptores que generas nombrando arriba.
 - **Visualización**: sombreado, alámbrico, o los dos a la vez; color del alámbrico.
@@ -71,10 +98,3 @@ falta nombrarla de ninguna forma especial.
 - **Estabilidad**: cuánto tiembla o se suaviza el modelo sobre el marcador.
 - **Modelo y marcador**: elegir otro `.glb`/`.mind` propio y generar un link de prueba para
   compartir (de momento solo funciona en el mismo dispositivo que lo genera).
-
-## 8. Ya no existe
-
-- `_marker_ref`: en una versión antigua servía para calibrar automáticamente la escala del
-  modelo contra el ancho real del marcador. Ya no se usa — el tamaño y la posición del modelo
-  se respetan tal cual salen de Blender, así que calibra tú la escala antes de exportar
-  (compárala contra el ancho real de tu marcador impreso).
