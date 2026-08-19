@@ -30,13 +30,25 @@ la app:
 - Crea un plano (del tamaño que quieras que abarque la sombra) y llámalo `_shadow`.
 - Da igual dónde lo coloques dentro de la jerarquía del `.blend`, se encuentra igual.
 
-## 4. Piezas rellenas al hacer un corte (Sección)
+## 4. Relleno sólido al hacer un corte (Sección) — opcional, avanzado
 
-La app tiene una herramienta de corte (planta/alzado/perfil). Si quieres que el hueco del corte
-se vea relleno de color en vez de hueco (como una losa cortada de verdad):
+La app tiene una herramienta de corte (Planta/Alzado/Perfil): mueves un plano por el modelo y
+todo lo que queda a un lado se oculta. Donde el plano atraviesa el modelo, la app intenta pintar
+esa franja de un color sólido (rosa), como en una sección de arquitectura de verdad — para que
+un muro cortado se vea como una franja rellena, no como un hueco vacío.
 
-- Nombra esas piezas con `_cutter` en cualquier parte del nombre, ej. `muro_cutter`.
-- Esas piezas nunca se ven enteras: solo se usan para generar el relleno de color del corte.
+**Por defecto ya funciona sin hacer nada especial**: usa tu geometría normal para pintar ese
+relleno. Solo hace falta `_cutter` si ese relleno automático te sale mal — por ejemplo, si tus
+muros/losas están modelados como una simple lámina plana sin grosor real (habitual para que el
+modelo pese menos), el corte por ahí no tiene "carne" que rellenar y sale una línea casi vacía en
+vez de una franja sólida.
+
+Para arreglar eso: duplicas esa pieza en Blender pero en versión **sólida** (con su grosor real,
+puede ser una caja simple), la colocas en el mismo sitio que la pieza fina original, y la nombras
+con `_cutter` (ej. `muro_cutter`). Esa copia sólida se queda siempre oculta en la vista normal —
+solo aparece rellenando el corte, justo por donde pasa el plano, en el sitio exacto donde está.
+
+Si no te importa que el relleno del corte no sea perfecto, puedes ignorar esto por completo.
 
 ## 5. Animación
 
