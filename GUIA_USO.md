@@ -25,9 +25,13 @@ arregla SIN tener que achicar ni mover el modelo en sí.
 Con esto puedes tener un modelo tan grande como una escalera real y un marcador de tamaño A4, y
 que en AR aparezca a su tamaño real en vez de encogido para caber entero en pantalla.
 
-**Si no pones `_marker_ref`**: la app encuadra el modelo automáticamente para que se vea entero y
-razonable sobre el marcador — sirve para pruebas rápidas, pero el tamaño respecto al marcador
-real NO está calibrado (no representa proporciones reales).
+**Si no pones `_marker_ref`**: se respeta la escala/posición tal cual venga del GLB, sin ningún
+ajuste automático — si el modelo sale mal de tamaño, hay que corregirlo a mano en Blender.
+
+**Si el modelo calibrado a tamaño real es demasiado grande para caber en el encuadre** (p. ej.
+una escalera completa, que solo se vería entera si te alejas mucho del marcador — a veces
+imposible en un local pequeño): usa el slider "Escala" en Visualización dentro de la app — ver
+sección 8. Deja intacta la calibración real, solo la reduce para verla más pequeña.
 
 ## 2. Varias versiones/fases que se pueden alternar (Estados)
 
@@ -92,7 +96,10 @@ falta nombrarla de ninguna forma especial.
 ## 8. Qué controla el usuario directamente en la app (nada que preparar en Blender)
 
 - **Estados / Capas**: los botones e interruptores que generas nombrando arriba.
-- **Visualización**: sombreado, alámbrico, o los dos a la vez; color del alámbrico.
+- **Visualización**: sombreado, alámbrico, o los dos a la vez; color del alámbrico; slider
+  "Escala" para ver el modelo más pequeño que su tamaño calibrado (100% = tamaño real de
+  `_marker_ref`, hacia abajo lo va reduciendo) — útil cuando el modelo real no cabe entero en la
+  cámara a una distancia razonable del marcador. No toca la calibración, solo la vista.
 - **Iluminación**: intensidad ambiente/direccional, dirección del sol, sombras on/off.
 - **Sección**: activar el corte, elegir planta/alzado/perfil, posición y lado del corte.
 - **Estabilidad**: cuánto tiembla o se suaviza el modelo sobre el marcador.
