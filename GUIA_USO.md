@@ -15,12 +15,19 @@ arregla SIN tener que achicar ni mover el modelo en sí.
 1. Crea un plano o una caja simple, con el tamaño REAL de tu marcador impreso, medido en las
    mismas unidades que uses para modelar (si modelas en metros y el marcador impreso mide 30cm
    de ancho, esa pieza debe medir 0.3 en su lado más largo).
-2. Colócala donde quieras que el marcador quede, en la realidad, respecto al modelo — por
-   ejemplo pegada a la base de una escalera, o al lado de una fachada. El centro de esa pieza es
-   el punto exacto donde luego "engancha" el marcador en AR.
+2. El punto que "engancha" con el marcador en AR es el **origen del objeto** (el punto naranja
+   de Blender, no necesariamente el centro visual de la pieza) — colócalo exactamente donde
+   quieras que quede el marcador respecto al modelo (ej. `Shift+S` → cursor a un vértice de la
+   base de la escalera, y luego `Object > Set Origin > Origin to 3D Cursor` sobre el
+   `_marker_ref`).
 3. Nómbrala con `_marker_ref` en el nombre (ej. `plano_marker_ref`).
 4. Exporta normal. La app la usa una sola vez al cargar el modelo para calcular escala y
    posición, y luego la borra sola — nunca se llega a ver.
+
+Como el escalado en Blender (tecla `S`) pivota sobre el origen del objeto por defecto, una vez
+puesto el origen donde quieres, puedes agrandar o achicar `_marker_ref` con libertad (para
+ajustar la escala de exhibición, ver más abajo) sin que el modelo se desplace — el origen se
+queda fijo donde lo dejaste.
 
 Con esto puedes tener un modelo tan grande como una escalera real y un marcador de tamaño A4, y
 que en AR aparezca a su tamaño real en vez de encogido para caber entero en pantalla.

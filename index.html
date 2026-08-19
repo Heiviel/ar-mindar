@@ -1708,7 +1708,17 @@
         const bb = found.geometry.boundingBox.clone().applyMatrix4(found.matrixWorld);
         const size = new THREE.Vector3();
         bb.getSize(size);
-        const center = bb.getCenter(new THREE.Vector3());
+        // El punto de anclaje es el ORIGEN del objeto "_marker_ref" (su
+        // pivote, el punto naranja en Blender) - NO el centro geometrico de
+        // su malla. Motivo: escalar un objeto en Blender (tecla S) pivota
+        // sobre su origen por defecto, asi que mientras el origen se deje
+        // exactamente donde debe "enganchar" el marcador, se puede
+        // redimensionar _marker_ref despues con total libertad (p.ej. para
+        // ajustar la escala de exhibicion agrandandolo) sin que el modelo
+        // se desplace. Si se usara el centro de la malla en su lugar,
+        // cualquier reescalado no perfectamente simetrico respecto al
+        // origen desplazaria ese centro, y con el, el modelo entero.
+        const center = new THREE.Vector3().setFromMatrixPosition(found.matrixWorld);
         const dims = [size.x, size.y, size.z].sort((a, b) => a - b);
         const refWidth = dims[2]; // la dimension mayor = ancho real del target
 
