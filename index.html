@@ -2116,21 +2116,6 @@
       document.getElementById('clipPanel').classList.add('hidden');
       document.getElementById('shadowRow').style.display = 'none';
 
-      let session;
-      try {
-        session = await navigator.xr.requestSession('immersive-ar', {
-          requiredFeatures: ['hit-test'],
-          optionalFeatures: ['dom-overlay'],
-          domOverlay: { root: document.body },
-        });
-      } catch (err) {
-        logDebug(`No se pudo iniciar sesion WebXR: ${err?.message || err}`, 'error');
-        setStatus('cam', `Cámara: ERROR WebXR - ${err?.message || err}`, 'err');
-        return;
-      }
-      logDebug('Sesion WebXR iniciada OK', 'ok');
-      setStatus('cam', 'Cámara: sesión WebXR activa ✓', 'ok');
-
       const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
       renderer.setPixelRatio(window.devicePixelRatio);
       renderer.setSize(window.innerWidth, window.innerHeight);
@@ -2141,19 +2126,41 @@
       renderer.domElement.style.position = 'absolute';
       renderer.domElement.style.inset = '0';
       document.querySelector('#container').appendChild(renderer.domElement);
-      // CLAVE: sin esto el renderer dibuja con el rAF normal del navegador
-      // en vez del de la sesion XR — la camara real nunca se compone (pantalla
-      // negra) y el callback de setAnimationLoop nunca recibe un XRFrame
-      // (por eso "Marcador"/hit-test se quedaba sin actualizar nunca).
-      await renderer.xr.setSession(session);
+
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 50);
       window.addEventListener('resize', () => {
         renderer.setSize(window.innerWidth, window.innerHeight);
         camera.aspect = window.innerWidth / window.innerHeight;
         camera.updateProjectionMatrix();
       });
 
-      const scene = new THREE.Scene();
-      const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 50);
+      // Pedir/enlazar la sesion WebXR: en funcion aparte porque hace falta
+      // volver a llamarla, no solo al entrar (ver "reanudar tras el
+      // selector de archivos" junto al listener de modelFileInput).
+      async function requestAndBindXRSession() {
+        let newSession;
+        try {
+          newSession = await navigator.xr.requestSession('immersive-ar', {
+            requiredFeatures: ['hit-test'],
+            optionalFeatures: ['dom-overlay'],
+            domOverlay: { root: document.body },
+          });
+        } catch (err) {
+          logDebug(`No se pudo iniciar sesion WebXR: ${err?.message || err}`, 'error');
+          setStatus('cam', `Cámara: ERROR WebXR - ${err?.message || err}`, 'err');
+          return null;
+        }
+        // CLAVE: sin esto el renderer dibuja con el rAF normal del navegador
+        // en vez del de la sesion XR — la camara real nunca se compone
+        // (pantalla negra) y setAnimationLoop nunca recibe un XRFrame.
+        await renderer.xr.setSession(newSession);
+        logDebug('Sesion WebXR iniciada OK', 'ok');
+        setStatus('cam', 'Cámara: sesión WebXR activa ✓', 'ok');
+        return newSession;
+      }
+      const session = await requestAndBindXRSession();
+      if (!session) return; // sin sesion no hay nada mas que hacer aqui
 
       const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1.2);
       scene.add(light);
@@ -2696,12 +2703,32 @@
       // arriba, registrado al cargar la pagina, ya deja actualizados
       // resolvedModelSrc/pickedModelFile antes de que este se ejecute). La
       // colocacion actual (posicion/rotacion/escala) NO se pierde.
-      document.getElementById('modelFileInput').addEventListener('change', () => {
+      const modelFileInputEl = document.getElementById('modelFileInput');
+      modelFileInputEl.addEventListener('change', () => {
         loadFloorModel(resolvedModelSrc, pickedModelFile?.name || resolvedModelSrc);
       });
       // El selector de marcador (.mind) no aplica a este modo — no hay
       // marcador impreso que reconocer.
       document.getElementById('targetFileInput').closest('.row').hidden = true;
+
+      // Reanudar la sesion WebXR tras el selector de archivos (ver el
+      // "if (expectingFileDialog)" en el listener de "end" mas arriba):
+      // "click" en el input marca que viene un dialogo nativo; al recuperar
+      // el foco de la pagina (se haya elegido archivo o cancelado — un
+      // cancel no dispara "change") se intenta reabrir la sesion sola.
+      let expectingFileDialog = false;
+      let sessionEndedByFileDialog = false;
+      modelFileInputEl.addEventListener('click', () => { expectingFileDialog = true; });
+      async function resumeXRSessionIfNeeded() {
+        if (!sessionEndedByFileDialog) return;
+        sessionEndedByFileDialog = false;
+        logDebug('Reanudando sesion WebXR tras el selector de archivos...');
+        await requestAndBindXRSession();
+      }
+      window.addEventListener('focus', resumeXRSessionIfNeeded);
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') resumeXRSessionIfNeeded();
+      });
 
       // --- Bucle WebXR: hit-test + render. Patron estandar de three.js
       // (ver ejemplo oficial webxr_ar_hittest). ---
@@ -2729,7 +2756,18 @@
             frame.session.addEventListener('end', () => {
               hitTestSourceRequested = false;
               hitTestSource = null;
-              setStatus('cam', 'Cámara: sesión WebXR finalizada', 'pending');
+              // En Android, abrir el selector nativo de archivos mientras hay
+              // una sesion "immersive-ar" activa hace que el sistema la
+              // termine (pierde la pantalla completa) — no es un fallo real,
+              // se reanuda sola al volver (ver listener de modelFileInput).
+              if (expectingFileDialog) {
+                expectingFileDialog = false;
+                sessionEndedByFileDialog = true;
+                setStatus('cam', 'Cámara: pausada (eligiendo archivo)...', 'pending');
+                logDebug('Sesion WebXR pausada por el selector de archivos — se reanuda sola al volver.');
+              } else {
+                setStatus('cam', 'Cámara: sesión WebXR finalizada', 'pending');
+              }
             });
           }
           if (hitTestSource) {
