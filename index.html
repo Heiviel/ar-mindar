@@ -27,6 +27,11 @@
   }
   #startFloorBtn:disabled { opacity:.4; }
   #startChoice .hint { color:#e6d27a; text-align:center; }
+  #resumeArBtn {
+    position:absolute; z-index:15; left:50%; top:50%; transform:translate(-50%,-50%);
+    padding:14px 24px; font:16px system-ui, sans-serif; background:#0ea5cf; color:#061018;
+    border:1px solid #5be7ff; border-radius:8px; font-weight:700;
+  }
   #hint {
     position:absolute; z-index:10; left:0; right:0; bottom:16px; text-align:center;
     color:#fff; font:14px system-ui, sans-serif; opacity:.8; pointer-events:none;
@@ -238,6 +243,7 @@
     </p>
   </div>
   <div id="hint" hidden>Enfoca el marcador impreso con la cámara</div>
+  <button id="resumeArBtn" hidden>▶ Reanudar cámara AR</button>
   <div id="debugLog" hidden role="log" aria-live="polite"></div>
   <div id="arStatus" hidden role="status" aria-live="polite"></div>
 
@@ -2713,21 +2719,18 @@
 
       // Reanudar la sesion WebXR tras el selector de archivos (ver el
       // "if (expectingFileDialog)" en el listener de "end" mas arriba):
-      // "click" en el input marca que viene un dialogo nativo; al recuperar
-      // el foco de la pagina (se haya elegido archivo o cancelado — un
-      // cancel no dispara "change") se intenta reabrir la sesion sola.
+      // "click" en el input marca que viene un dialogo nativo. Reanudar NO
+      // puede hacerse solo, ni siquiera al recuperar el foco de la pagina:
+      // requestSession() exige "user activation" (un toque real, dentro del
+      // propio handler de un evento de usuario) y recuperar el foco no
+      // cuenta como tal para el navegador — de ahi el boton "Reanudar
+      // camara AR", que SI es un toque real.
       let expectingFileDialog = false;
-      let sessionEndedByFileDialog = false;
+      const resumeArBtn = document.getElementById('resumeArBtn');
       modelFileInputEl.addEventListener('click', () => { expectingFileDialog = true; });
-      async function resumeXRSessionIfNeeded() {
-        if (!sessionEndedByFileDialog) return;
-        sessionEndedByFileDialog = false;
-        logDebug('Reanudando sesion WebXR tras el selector de archivos...');
+      resumeArBtn.addEventListener('click', async () => {
+        resumeArBtn.hidden = true;
         await requestAndBindXRSession();
-      }
-      window.addEventListener('focus', resumeXRSessionIfNeeded);
-      document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') resumeXRSessionIfNeeded();
       });
 
       // --- Bucle WebXR: hit-test + render. Patron estandar de three.js
@@ -2758,13 +2761,15 @@
               hitTestSource = null;
               // En Android, abrir el selector nativo de archivos mientras hay
               // una sesion "immersive-ar" activa hace que el sistema la
-              // termine (pierde la pantalla completa) — no es un fallo real,
-              // se reanuda sola al volver (ver listener de modelFileInput).
+              // termine (pierde la pantalla completa) — no es un fallo real.
+              // No se puede reanudar sola (requestSession exige un toque
+              // real del usuario, recuperar el foco no cuenta): se muestra
+              // el boton "Reanudar camara AR" para que ese toque lo de el.
               if (expectingFileDialog) {
                 expectingFileDialog = false;
-                sessionEndedByFileDialog = true;
-                setStatus('cam', 'Cámara: pausada (eligiendo archivo)...', 'pending');
-                logDebug('Sesion WebXR pausada por el selector de archivos — se reanuda sola al volver.');
+                setStatus('cam', 'Cámara: pausada — toca "Reanudar cámara AR"', 'pending');
+                logDebug('Sesion WebXR pausada por el selector de archivos.');
+                resumeArBtn.hidden = false;
               } else {
                 setStatus('cam', 'Cámara: sesión WebXR finalizada', 'pending');
               }
