@@ -7,6 +7,9 @@ index.backup-*.html
 index_back.html
 OLD/
 
-# GLB de mas de ~90MB: GitHub rechaza blobs >100MB por push normal.
-# Si necesitas versionarlo, usa Git LFS en vez de sacarlo del .gitignore.
-models/edificio-seccion.glb
+# Modelos y targets: se seleccionan en local desde la app, nunca se suben.
+# Solo se versiona el codigo necesario para que la app funcione.
+models/*
+!models/.gitkeep
+targets/*
+!targets/.gitkeep
