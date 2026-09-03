@@ -312,6 +312,9 @@
           <input type="range" id="displayScaleSlider" min="0.001" max="1.5" step="0.001" value="1" />
           <span id="displayScaleVal">100%</span>
         </div>
+        <div class="row" id="zUpFixRow" hidden>
+          <label><input type="checkbox" id="zUpFixChk" /> Modelo en Z-up (Blender, sin convertir a Y-up)</label>
+        </div>
       </div>
     </section>
 
@@ -2203,6 +2206,20 @@
       }
       const STATE_RE = /^st\d+/i;
       const LAYER_RE = /^ly\d+/i;
+      // "_shadow"/"_marker_ref"/"_cutter": convenciones tecnicas del modo
+      // Marcador que este modo aun no implementa (Seccion, plano de sombra
+      // propio, calibracion). Sin excluirlas se pintan tal cual vienen del
+      // GLB -> una caja/plano gigante flotando en la escena (justo lo que
+      // se vio en pantalla: el "_shadow" renderizado como geometria normal).
+      const SHADOW_NAME_RE = /(^|_)shadow(\.\d+)?$/i;
+      const MARKER_REF_NAME_RE = /(^|_)marker_ref(\.\d+)?$/i;
+      const CUTTER_NAME_HINTS = ['__cutter', '_cutter', '[cutter]', '.cutter'];
+      function isTechnicalMesh(mesh) {
+        const name = (mesh.name || '');
+        if (SHADOW_NAME_RE.test(name) || MARKER_REF_NAME_RE.test(name)) return true;
+        const lower = name.toLowerCase();
+        return CUTTER_NAME_HINTS.some((tag) => lower.includes(tag)) || mesh.userData?.cutter === true;
+      }
       function parseStateInfo(name) {
         const m = (name || '').trim().match(/^st(\d+)(?:_(.+))?$/i);
         if (!m) return null;
@@ -2339,7 +2356,7 @@
         allStateMeshes = [];
         const activeRoot = stateEntries.length >= 2 ? stateEntries[activeStateIndex]?.node : null;
         loadedModel.traverse((child) => {
-          if (!child.isMesh) return;
+          if (!child.isMesh || isTechnicalMesh(child)) return;
           if (activeRoot) {
             let p = child; let inside = false;
             while (p) { if (p === activeRoot) { inside = true; break; } p = p.parent; }
@@ -2498,10 +2515,34 @@
           // convencion habitual de glTF, 1 unidad = 1 metro real.
           baseModelScale = 1;
           loadedModel.scale.setScalar(1);
-          const box = new THREE.Box3().setFromObject(loadedModel);
-          const sphere = box.getBoundingSphere(new THREE.Sphere());
+          // Ocultar objetos tecnicos (_shadow, _marker_ref, _cutter): este
+          // modo aun no implementa Seccion ni plano de sombra propio, y sin
+          // ocultarlos se pintan tal cual vienen del GLB como geometria
+          // suelta flotando en la escena.
+          let technicalCount = 0;
+          loadedModel.traverse((child) => {
+            if (child.isMesh && isTechnicalMesh(child)) { child.visible = false; technicalCount++; }
+          });
+          if (technicalCount) logDebug(`${technicalCount} objeto(s) tecnico(s) (_shadow/_marker_ref/_cutter) ocultos — no soportados aun en modo Suelo.`);
+          const box = new THREE.Box3();
+          loadedModel.traverse((child) => {
+            if (child.isMesh && !isTechnicalMesh(child)) box.expandByObject(child);
+          });
+          const sphere = box.isEmpty() ? new THREE.Sphere(new THREE.Vector3(), 1) : box.getBoundingSphere(new THREE.Sphere());
           modelRadius = Math.max(sphere.radius, 0.1);
           logDebug(`Modelo (modo suelo): radio aprox. ${modelRadius.toFixed(2)}m — si no coincide con el tamaño real esperado, revisa las unidades de exportacion en Blender.`);
+          // Revelar el interruptor Z-up solo tras cargar: en marcador nunca
+          // se usa (fila oculta por defecto en el HTML), y aqui no tiene
+          // sentido mostrarlo antes de saber si hay modelo que corregir.
+          const zUpFixRow = document.getElementById('zUpFixRow');
+          const zUpFixChk = document.getElementById('zUpFixChk');
+          zUpFixRow.hidden = false;
+          zUpFixChk.checked = false;
+          zUpFixChk.onchange = () => {
+            loadedModel.rotation.x = zUpFixChk.checked ? -Math.PI / 2 : 0;
+            loadedModel.updateMatrixWorld(true);
+            if (placementRoot) refreshFloorBindings();
+          };
           if (gltf.animations && gltf.animations.length > 0) {
             mixer = new THREE.AnimationMixer(loadedModel);
             gltf.animations.forEach((clip) => {
