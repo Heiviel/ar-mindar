@@ -2730,6 +2730,15 @@
       modelFileInputEl.addEventListener('click', () => { expectingFileDialog = true; });
       resumeArBtn.addEventListener('click', async () => {
         resumeArBtn.hidden = true;
+        setStatus('cam', 'Cámara: reanudando...', 'pending');
+        // Desenlazar explicitamente + una pequena espera antes de repedir
+        // sesion: en Android, pedir "immersive-ar" de nuevo justo tras el
+        // cierre anterior a veces deja la camara mostrando el ultimo frame
+        // capturado en vez de imagen en vivo (el recurso de camara no le
+        // ha dado tiempo a liberarse antes de que la nueva sesion lo
+        // reclame). Es la mitigacion habitual para ese tipo de carrera.
+        try { renderer.xr.setSession(null); } catch (e) { /* ya estaba desenlazada */ }
+        await new Promise((resolve) => setTimeout(resolve, 400));
         await requestAndBindXRSession();
       });
 
