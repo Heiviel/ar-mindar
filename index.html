@@ -172,6 +172,16 @@
     width:28px; height:28px; padding:0; border:none;
     background:transparent; cursor:pointer; flex-shrink:0; margin-left:auto;
   }
+  /* Interruptor "incluir en Seccion" por capa: activo (por defecto) = se
+     corta con el plano de seccion igual que el resto; apagado = la pieza
+     se queda siempre entera pase lo que pase con el corte (ej. las munecas
+     interiores de una matrioska mientras solo se secciona la cascara). */
+  .layerSectionToggle {
+    width:28px; height:28px; padding:0; flex-shrink:0; margin-left:6px;
+    border:1px solid rgba(120,220,255,.4); border-radius:6px;
+    background:rgba(94,231,255,.18); color:#8fdfff; font-size:14px; cursor:pointer;
+  }
+  .layerSectionToggle.off { background:transparent; color:#4a6070; border-color:rgba(120,220,255,.15); }
   #stabilityRow { justify-content:space-between; align-items:center; }
   #stabilityRow input[type=range] { flex:1; margin:0 8px; }
   #displayScaleRow { justify-content:space-between; align-items:center; }
@@ -1463,6 +1473,24 @@
         return roots;
       }
 
+      // Una capa marcada "no seccionable" (interruptor de tijeras en el
+      // panel Capas) se queda siempre entera, sin importar donde este el
+      // plano de corte — pensado para poder seccionar solo una capa
+      // exterior y dejar intacto lo que hay dentro (ej. las munecas de una
+      // matrioska). Por defecto TODAS las capas son seccionables, igual
+      // que el comportamiento de siempre.
+      function isSectionableMesh(mesh) {
+        for (const e of layerEntries) {
+          if (e.sectionable) continue;
+          let p = mesh;
+          while (p) {
+            if (p === e.node) return false;
+            p = p.parent;
+          }
+        }
+        return true;
+      }
+
       function refreshModelBindings(keepSliderValue = true) {
         if (!loadedModel) return;
         const { visibleMeshes, cutterMeshes } = splitVisibleAndCutterMeshes(loadedModel);
@@ -1496,20 +1524,26 @@
         });
 
               currentVisibleMeshes.forEach((child) => {
+          const clip = isSectionableMesh(child) ? [clipPlaneWorld] : null;
           forEachMeshMaterial(child, (mat) => {
-            mat.clippingPlanes = [clipPlaneWorld];
+            mat.clippingPlanes = clip;
           });
         });
 
         // Asegurar clipping en todos los meshes del estado, incluyendo capas ocultas
         allStateMeshes.forEach((child) => {
+          const clip = isSectionableMesh(child) ? [clipPlaneWorld] : null;
           forEachMeshMaterial(child, (mat) => {
-            mat.clippingPlanes = [clipPlaneWorld];
+            mat.clippingPlanes = clip;
             mat.side = THREE.DoubleSide;
           });
         });
 
-        const sourceForCap = currentCutterMeshes.length ? currentCutterMeshes : currentVisibleMeshes;
+        // Piezas marcadas como "no seccionable" (interruptor de tijeras en
+        // Capas): se quedan siempre enteras, asi que tampoco les hace falta
+        // relleno de corte — un cap ahi se veria flotando sin sentido.
+        const capSourcePool = currentCutterMeshes.length ? currentCutterMeshes : currentVisibleMeshes;
+        const sourceForCap = capSourcePool.filter(isSectionableMesh);
         rebuildCapSliceMeshes(sourceForCap);
         // Los clones de wireframe se construyen a partir de TODAS las mallas
         // del estado activo (no solo las de capas visibles ahora mismo).
@@ -1610,6 +1644,27 @@
 
           btn.innerHTML = `<span class="layerDot"></span>${entry.uiLabel}`;
           btn.appendChild(colorPick);
+
+          const sectionToggle = document.createElement('button');
+          sectionToggle.type = 'button';
+          sectionToggle.className = 'layerSectionToggle' + (entry.sectionable ? '' : ' off');
+          sectionToggle.textContent = '✂';
+          sectionToggle.title = entry.sectionable
+            ? 'Se corta con la Sección (toca para que se quede siempre entera)'
+            : 'Se queda siempre entera (toca para que SÍ se corte con la Sección)';
+          sectionToggle.setAttribute('aria-pressed', String(entry.sectionable));
+          sectionToggle.addEventListener('click', (e) => {
+            e.stopPropagation();
+            entry.sectionable = !entry.sectionable;
+            sectionToggle.classList.toggle('off', !entry.sectionable);
+            sectionToggle.setAttribute('aria-pressed', String(entry.sectionable));
+            sectionToggle.title = entry.sectionable
+              ? 'Se corta con la Sección (toca para que se quede siempre entera)'
+              : 'Se queda siempre entera (toca para que SÍ se corte con la Sección)';
+            refreshModelBindings(true);
+          });
+          btn.appendChild(sectionToggle);
+
           const toggleLayer = () => {
             entry.visible = !entry.visible;
             entry.node.visible = entry.visible;
@@ -1645,6 +1700,7 @@
         layerEntries = roots.map((node) => ({
           node,
           visible: true,
+          sectionable: true, // por defecto se corta con la Seccion como el resto
           uiLabel: layerLabel(node.name),
         }));
         if (!layerEntries.length) {
