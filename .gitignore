@@ -17,6 +17,7 @@ OLD/
 models/*
 !models/.gitkeep
 !models/bola.glb
+!models/personas.glb
 targets/*
 !targets/.gitkeep
 !targets/bola.mind
