@@ -2138,6 +2138,11 @@
       renderer.domElement.style.position = 'absolute';
       renderer.domElement.style.inset = '0';
       document.querySelector('#container').appendChild(renderer.domElement);
+      // CLAVE: sin esto el renderer dibuja con el rAF normal del navegador
+      // en vez del de la sesion XR — la camara real nunca se compone (pantalla
+      // negra) y el callback de setAnimationLoop nunca recibe un XRFrame
+      // (por eso "Marcador"/hit-test se quedaba sin actualizar nunca).
+      await renderer.xr.setSession(session);
       window.addEventListener('resize', () => {
         renderer.setSize(window.innerWidth, window.innerHeight);
         camera.aspect = window.innerWidth / window.innerHeight;
