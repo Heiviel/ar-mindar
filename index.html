@@ -297,7 +297,7 @@
         </div>
         <div class="row" id="displayScaleRow">
           <label for="displayScaleSlider">Escala</label>
-          <input type="range" id="displayScaleSlider" min="0.02" max="1.5" step="0.01" value="1" />
+          <input type="range" id="displayScaleSlider" min="0.001" max="1.5" step="0.001" value="1" />
           <span id="displayScaleVal">100%</span>
         </div>
       </div>
@@ -1829,7 +1829,9 @@
       }
       displayScaleSlider.addEventListener('input', () => {
         const k = parseFloat(displayScaleSlider.value);
-        displayScaleVal.textContent = `${Math.round(k * 100)}%`;
+        // Bajo 1% el redondeo a entero muestra "0%" aunque el modelo si se
+        // haya encogido; con 2 decimales se ve el valor real (ej. "0.35%").
+        displayScaleVal.textContent = k * 100 < 1 ? `${(k * 100).toFixed(2)}%` : `${Math.round(k * 100)}%`;
         applyDisplayScaleMultiplier(k);
       });
       displayScaleSlider.addEventListener('change', () => {
@@ -1853,7 +1855,7 @@
           baseModelScale = loadedModel.scale.x;
           baseModelPosition.copy(loadedModel.position);
           anchor.group.add(loadedModel);
-          // Activar animaciones de material del GLB si existen
+          // Activar animaciones (de objeto/hueso o de material) del GLB si existen
           if (gltf.animations && gltf.animations.length > 0) {
             mixer = new THREE.AnimationMixer(loadedModel);
             gltf.animations.forEach((clip) => {
@@ -1863,6 +1865,9 @@
             animScrub.max = animDuration.toFixed(2);
             animScrub.step = (animDuration / 200).toFixed(4);
             animPanel.classList.remove('hidden');
+            logDebug(`Animaciones detectadas: ${gltf.animations.length} (${gltf.animations.map(c => c.name || 'sin nombre').join(', ')}), duracion max ${animDuration.toFixed(2)}s`, 'ok');
+          } else {
+            logDebug('Sin animaciones en el GLB (gltf.animations vacio) — revisa en Blender que la accion este en NLA con "Push Down" y que la exportacion tenga "Animation > Bake Animation" activado; si usa drivers/constraints hay que bakearlos a keyframes antes de exportar.');
           }
           // Tamano real del modelo en memoria de GPU: texturas y sus
           // dimensiones son lo que mas pesa (mucho mas que la geometria).
