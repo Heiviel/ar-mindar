@@ -2179,25 +2179,66 @@
       // para reubicar) con la pose del hit-test, y a partir de ahi el
       // usuario es quien se mueve alrededor (SLAM del propio dispositivo).
       let placementRoot = null;
+      // Solo la POSICION se toma del hit-test en cada re-toque; la rotacion
+      // y la escala que el usuario haya ajustado con los gestos (ver mas
+      // abajo) se conservan entre colocaciones — reubicar no debe deshacer
+      // el pellizco/giro que ya hizo.
       function placeAt(matrixArray) {
+        const m = new THREE.Matrix4().fromArray(matrixArray);
+        const pos = new THREE.Vector3();
+        const quat = new THREE.Quaternion();
+        const scl = new THREE.Vector3();
+        m.decompose(pos, quat, scl);
         if (!placementRoot) {
           placementRoot = new THREE.Group();
+          placementRoot.quaternion.copy(quat);
           scene.add(placementRoot);
           if (loadedModel && !loadedModel.parent) attachModelToRoot();
         }
-        const m = new THREE.Matrix4().fromArray(matrixArray);
-        m.decompose(placementRoot.position, placementRoot.quaternion, placementRoot.scale);
-        placementRoot.scale.setScalar(1);
+        placementRoot.position.copy(pos);
         updateLightPosition();
       }
 
       const controller = renderer.xr.getController(0);
       controller.addEventListener('select', () => {
-        if (!reticle.visible) return;
+        // Un pellizco/giro de 2 dedos a veces tambien dispara "select" en
+        // Chrome (cada dedo puede generar su propio input source
+        // transitorio) — ignorarlo mientras haya un gesto en curso evita
+        // que la colocacion salte de sitio a mitad de un pellizco.
+        if (!reticle.visible || gesture) return;
         placeAt(reticle.matrix.elements);
-        hint.textContent = 'Modelo colocado — toca de nuevo el suelo/mesa para reubicarlo';
+        hint.textContent = 'Modelo colocado — toca para reubicarlo, pellizca para escalar, gira con dos dedos';
       });
       scene.add(controller);
+
+      // --- Gestos tactiles: pellizcar para escalar, girar con dos dedos.
+      // Van por eventos touch normales (siguen llegando durante la sesion
+      // XR gracias al dom-overlay), independientes del "select" de arriba
+      // que solo coloca/reubica con un toque de un dedo. ---
+      let gesture = null;
+      function twoTouchState(touches) {
+        const dx = touches[1].clientX - touches[0].clientX;
+        const dy = touches[1].clientY - touches[0].clientY;
+        return { dist: Math.hypot(dx, dy), angle: Math.atan2(dy, dx) };
+      }
+      renderer.domElement.addEventListener('touchstart', (e) => {
+        if (e.touches.length === 2 && placementRoot) {
+          const s = twoTouchState(e.touches);
+          gesture = { startDist: s.dist, startAngle: s.angle, startScale: placementRoot.scale.x, startRotY: placementRoot.rotation.y };
+        }
+      }, { passive: true });
+      renderer.domElement.addEventListener('touchmove', (e) => {
+        if (!gesture || e.touches.length !== 2 || !placementRoot) return;
+        e.preventDefault(); // evita que el navegador haga su propio pinch-zoom de pagina
+        const s = twoTouchState(e.touches);
+        const newScale = THREE.MathUtils.clamp(gesture.startScale * (s.dist / gesture.startDist), 0.05, 20);
+        placementRoot.scale.setScalar(newScale);
+        placementRoot.rotation.y = gesture.startRotY + (s.angle - gesture.startAngle);
+      }, { passive: false });
+      renderer.domElement.addEventListener('touchend', (e) => {
+        if (e.touches.length < 2) gesture = null;
+      }, { passive: true });
+      renderer.domElement.addEventListener('touchcancel', () => { gesture = null; }, { passive: true });
 
       // --- Helpers puros duplicados del modo Marcador (ver nota arriba) ---
       function forEachMeshMaterial(mesh, cb) {
