@@ -774,6 +774,15 @@
       });
 
       const { renderer, scene, camera } = mindarThree;
+      // El plano lejano (far) por defecto de MindAR se queda corto para
+      // modelos calibrados grandes o escalados hacia arriba con el slider
+      // "Escala" (>100%): la escala del anchor multiplica el tamano real
+      // por el ancho del marcador en pixeles (cientos), asi que un modelo
+      // de pocos metros locales puede acabar con extremos a una distancia
+      // de mundo mayor que el far por defecto, y esos vertices se recortan
+      // sin mas (el "choque con un clipping plane" que se ve al agrandar).
+      camera.far = 10000;
+      camera.updateProjectionMatrix();
       // Exponer para que el slider de estabilidad pueda ajustarlo en tiempo real
       const filterState = { beta: 10 };
 
