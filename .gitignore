@@ -9,7 +9,15 @@ OLD/
 
 # Modelos y targets: se seleccionan en local desde la app, nunca se suben.
 # Solo se versiona el codigo necesario para que la app funcione.
+# Excepcion: los assets de demo por defecto ("bola") son fijos y pequenos,
+# no contenido de trabajo en curso, y la app los necesita para funcionar
+# nada mas desplegarse (sin ellos, DEFAULT_TARGET_SRC/DEFAULT_MODEL_SRC
+# apuntan a un 404 y MindAR falla al decodificar la respuesta como si
+# fuera el .mind real).
 models/*
 !models/.gitkeep
+!models/bola.glb
 targets/*
 !targets/.gitkeep
+!targets/bola.mind
+!targets/bola.jpeg
