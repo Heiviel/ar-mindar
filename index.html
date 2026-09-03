@@ -1879,13 +1879,67 @@
         refreshModelBindings(true);
       });
 
-      logDebug(`Cargando modelo ${pickedModelFile?.name || resolvedModelSrc} ...`);
-      setStatus('model', 'Modelo: cargando 0%...', 'pending');
-      const loader = new GLTFLoader();
-      loader.load(
-        resolvedModelSrc,
+      // Cambiar de modelo SIN reiniciar la camara/marcador: el target no
+      // cambia, solo se recarga y recalibra el modelo contra el mismo
+      // "_marker_ref". A diferencia del modo Suelo, aqui NO hace falta
+      // reiniciar nada mas (la camara via getUserMedia no depende de una
+      // sesion exclusiva como WebXR, un selector de archivos nativo no la
+      // corta), asi que "loadModel" es un simple recargar-en-el-sitio.
+      function disposeModelTree(root) {
+        root.traverse((child) => {
+          if (!child.isMesh) return;
+          child.geometry?.dispose();
+          forEachMeshMaterial(child, (mat) => {
+            Object.values(mat).forEach((v) => { if (v?.isTexture) v.dispose(); });
+            mat.dispose();
+          });
+        });
+      }
+      function resetModelState() {
+        if (mixer) mixer.stopAllAction();
+        mixer = null;
+        animDuration = 0;
+        animPaused = false;
+        animPlayPause.textContent = '⏸ Pausa';
+        animPanel.classList.add('hidden');
+        statePanel.classList.add('hidden');
+        layerPanel.classList.add('hidden');
+        stateEntries = [];
+        layerEntries = [];
+        activeStateIndex = 0;
+        allStateMeshes = [];
+        currentVisibleMeshes = [];
+        currentCutterMeshes = [];
+        clearGroup(capSliceGroup);
+        capSliceGroup = null;
+        capSliceMeshes = [];
+        clearGroup(wireGroup);
+        wireGroup = null;
+        wireMeshes = [];
+        // shadowPlaneMeshes cuelgan directo de anchor.group (setupShadowPlanes
+        // los reparenta con attach()), no de loadedModel — hay que quitarlos
+        // aparte o el "_shadow" del modelo anterior se queda flotando.
+        shadowPlaneMeshes.forEach((mesh) => {
+          if (mesh.parent) mesh.parent.remove(mesh);
+          mesh.geometry?.dispose();
+          forEachMeshMaterial(mesh, (mat) => mat.dispose());
+        });
+        shadowPlaneMeshes = [];
+        modelBox = null;
+        if (loadedModel) {
+          if (loadedModel.parent) loadedModel.parent.remove(loadedModel);
+          disposeModelTree(loadedModel);
+        }
+        loadedModel = null;
+      }
+      function loadModel(src, label) {
+        resetModelState();
+        logDebug(`Cargando modelo ${label} ...`);
+        setStatus('model', 'Modelo: cargando 0%...', 'pending');
+        new GLTFLoader().load(
+        src,
         (gltf) => {
-          logDebug(`Modelo ${pickedModelFile?.name || resolvedModelSrc} cargado OK`, 'ok');
+          logDebug(`Modelo ${label} cargado OK`, 'ok');
           setStatus('model', 'Modelo: OK ✓', 'ok');
           loadedModel = gltf.scene;
           // Escala/posicion se calibran automaticamente contra "_marker_ref"
@@ -1951,7 +2005,17 @@
           logDebug(`Error cargando modelo 3D: ${err?.message || err}`, 'error');
           setStatus('model', `Modelo: ERROR - ${err?.message || err}`, 'err');
         }
-      );
+        );
+      }
+      loadModel(resolvedModelSrc, pickedModelFile?.name || resolvedModelSrc);
+
+      // Cambiar de modelo SIN salir del modo Marcador: el mismo selector
+      // de archivo del panel "Modelo y marcador" vale para las dos veces
+      // (el listener global de arriba ya deja actualizados
+      // resolvedModelSrc/pickedModelFile antes de que este se ejecute).
+      modelFileInput.addEventListener('change', () => {
+        loadModel(resolvedModelSrc, pickedModelFile?.name || resolvedModelSrc);
+      });
 
       try {
         await mindarThree.start();
