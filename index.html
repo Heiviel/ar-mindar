@@ -2316,10 +2316,7 @@
       hint.textContent = 'Mueve el móvil despacio hasta detectar el suelo o una mesa (aro azul) y toca la pantalla para colocar el modelo';
       logDebug('Iniciando modo Suelo/mesa (WebXR Hit Test)...');
       setStatus('cam', 'Cámara: solicitando sesión WebXR...', 'pending');
-
-      // Herramientas aun no portadas a este modo.
-      document.getElementById('clipPanel').classList.add('hidden');
-      document.getElementById('shadowRow').style.display = 'none';
+      document.getElementById('shadowRow').style.display = '';
 
       // Desmontar el renderer/sesion de una ejecucion anterior (reinicio
       // tras el selector de archivos): parar su bucle antes de que exista
@@ -2338,6 +2335,8 @@
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
       renderer.xr.enabled = true;
       renderer.xr.setReferenceSpaceType('local');
+      renderer.localClippingEnabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
       renderer.domElement.style.position = 'absolute';
       renderer.domElement.style.inset = '0';
       document.querySelector('#container').appendChild(renderer.domElement);
@@ -2381,6 +2380,10 @@
       const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1.2);
       scene.add(light);
       const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      dirLight.castShadow = false;
+      dirLight.shadow.mapSize.set(2048, 2048);
+      dirLight.shadow.bias = -0.0005;
+      dirLight.shadow.normalBias = 0.005;
       scene.add(dirLight);
       const dirLightTarget = new THREE.Object3D();
       scene.add(dirLightTarget);
@@ -2506,19 +2509,37 @@
       }
       const STATE_RE = /^st\d+/i;
       const LAYER_RE = /^ly\d+/i;
-      // "_shadow"/"_marker_ref"/"_cutter": convenciones tecnicas del modo
-      // Marcador que este modo aun no implementa (Seccion, plano de sombra
-      // propio, calibracion). Sin excluirlas se pintan tal cual vienen del
-      // GLB -> una caja/plano gigante flotando en la escena (justo lo que
-      // se vio en pantalla: el "_shadow" renderizado como geometria normal).
-      const SHADOW_NAME_RE = /(^|_)shadow(\.\d+)?$/i;
+      // "_marker_ref": convencion de calibracion del modo Marcador que no
+      // aplica aqui (no hay marcador impreso que calibrar) - se ignora
+      // siempre, tal cual llega del GLB.
       const MARKER_REF_NAME_RE = /(^|_)marker_ref(\.\d+)?$/i;
+      function isMarkerRef(mesh) { return MARKER_REF_NAME_RE.test(mesh.name || ''); }
+      // "_shadow" y "_cutter" SI se soportan (Seccion y Sombra portadas del
+      // modo Marcador): se gestionan aparte (setupShadowPlanes,
+      // rebuildCapSliceMeshes), no se ocultan sin mas.
+      const SHADOW_NAME_RE = /(^|_)shadow(\.\d+)?$/i;
+      function isShadowPlane(mesh) { return SHADOW_NAME_RE.test(mesh.name || ''); }
       const CUTTER_NAME_HINTS = ['__cutter', '_cutter', '[cutter]', '.cutter'];
-      function isTechnicalMesh(mesh) {
-        const name = (mesh.name || '');
-        if (SHADOW_NAME_RE.test(name) || MARKER_REF_NAME_RE.test(name)) return true;
-        const lower = name.toLowerCase();
-        return CUTTER_NAME_HINTS.some((tag) => lower.includes(tag)) || mesh.userData?.cutter === true;
+      function isCutterMesh(mesh) {
+        const name = (mesh.name || '').toLowerCase();
+        return CUTTER_NAME_HINTS.some((tag) => name.includes(tag)) || mesh.userData?.cutter === true;
+      }
+      function isEffectivelyVisible(obj) {
+        let p = obj;
+        while (p) { if (!p.visible) return false; p = p.parent; }
+        return true;
+      }
+      function splitVisibleAndCutterMeshes(root) {
+        const visibleMeshes = [];
+        const cutterMeshes = [];
+        root.traverse((child) => {
+          if (!child.isMesh) return;
+          if (!isEffectivelyVisible(child)) return;
+          if (isShadowPlane(child) || isMarkerRef(child)) return;
+          if (isCutterMesh(child)) cutterMeshes.push(child);
+          else visibleMeshes.push(child);
+        });
+        return { visibleMeshes, cutterMeshes };
       }
       function parseStateInfo(name) {
         const m = (name || '').trim().match(/^st(\d+)(?:_(.+))?$/i);
@@ -2559,12 +2580,31 @@
       let layerEntries = [];
       let activeStateIndex = 0;
       let allStateMeshes = [];
+      let currentVisibleMeshes = [];
+      let currentCutterMeshes = [];
       let currentViewMode = 'shaded';
       let wireMeshes = [];
       let wireGroup = null;
       let wireColorHex = document.getElementById('wireColor').value;
       let lightAzimuthDeg = parseFloat(document.getElementById('lightAzimuth').value);
       let lightElevationDeg = parseFloat(document.getElementById('lightElevation').value);
+
+      // --- Seccion (clipping) y Sombra, portados del modo Marcador ---
+      let clipAxis = 'z';
+      let clipEnabled = false;
+      let modelBoxLocal = null;
+      const flipSide = { x: false, y: false, z: false };
+      const clipPlaneLocal = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+      const clipPlaneWorld = new THREE.Plane();
+      const backClipPlaneLocal = new THREE.Plane();
+      const backClipPlaneWorld = new THREE.Plane();
+      const AXES = { z: new THREE.Vector3(0, 0, 1), x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0) };
+      const OUTSIDE_CONSTANT = 1e6;
+      let capSliceMeshes = [];
+      let capSliceGroup = null;
+      let shadowsEnabled = false;
+      let shadowPlaneMeshes = [];
+      const SHADOW_OPACITY = 0.32;
 
       const statePanel = document.getElementById('statePanel');
       const stateButtons = document.getElementById('stateButtons');
@@ -2578,6 +2618,14 @@
         wire: document.getElementById('viewWire'),
         hybrid: document.getElementById('viewHybrid'),
       };
+      const clipEnabledChk = document.getElementById('clipEnabledChk');
+      const clipSlider = document.getElementById('clipSlider');
+      const clipFlipBtn = document.getElementById('clipFlip');
+      const axisButtons = [
+        document.getElementById('clipPlanta'),
+        document.getElementById('clipAlzado'),
+        document.getElementById('clipPerfil'),
+      ];
 
       // Direccion de la luz: en WebXR el espacio de referencia "local" es
       // SIEMPRE Y-up alineado con la gravedad (parte del spec), asi que a
@@ -2598,6 +2646,220 @@
         const center = placementRoot.position;
         dirLight.position.copy(center).addScaledVector(dir, modelRadius * 3);
         dirLightTarget.position.copy(center);
+        if (shadowsEnabled) updateShadowCameraFrustum();
+      }
+
+      // Encuadre del frustum ortografico de la sombra. Mucho mas simple que
+      // en modo Marcador: alli hacia falta convertir entre espacio local del
+      // anchor y mundo porque MindAR escala por el ancho del marcador en
+      // pixeles; aqui todo esta ya en unidades de mundo reales (metros),
+      // asi que basta con modelRadius directamente.
+      function updateShadowCameraFrustum() {
+        if (!placementRoot) return;
+        const radius = Math.max(modelRadius, 0.05) * 1.15;
+        const cam = dirLight.shadow.camera;
+        cam.left = -radius; cam.right = radius; cam.top = radius; cam.bottom = -radius;
+        cam.near = radius * 0.1;
+        cam.far = radius * 8;
+        cam.updateProjectionMatrix();
+        const texel = (radius * 2) / dirLight.shadow.mapSize.x;
+        dirLight.shadow.normalBias = texel * 1.5;
+        dirLight.shadow.bias = -0.0005;
+        dirLight.shadow.needsUpdate = true;
+      }
+
+      // Igual que computeBoxFromMeshes/computeBoxLocal en modo Marcador:
+      // caja en espacio LOCAL de placementRoot (transforma los 8 vertices de
+      // cada malla por placementRootInv * matrixWorld), no en espacio de
+      // mundo — necesario para que el plano de corte (definido en local)
+      // coincida con la geometria real tras aplicar placementRoot.matrixWorld
+      // una unica vez en el bucle de render.
+      function computeBoxLocal(meshes, fallbackRoot) {
+        placementRoot.updateMatrixWorld(true);
+        const rootInv = new THREE.Matrix4().copy(placementRoot.matrixWorld).invert();
+        const box = new THREE.Box3();
+        box.makeEmpty();
+        const source = meshes.length ? meshes : (() => {
+          const list = [];
+          fallbackRoot.traverse((child) => { if (child.isMesh) list.push(child); });
+          return list;
+        })();
+        const localMat = new THREE.Matrix4();
+        const v = new THREE.Vector3();
+        source.forEach((m) => {
+          if (!m.geometry) return;
+          if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+          m.updateWorldMatrix(true, false);
+          localMat.multiplyMatrices(rootInv, m.matrixWorld);
+          const bb = m.geometry.boundingBox;
+          for (let i = 0; i < 8; i++) {
+            v.set(
+              (i & 1) ? bb.max.x : bb.min.x,
+              (i & 2) ? bb.max.y : bb.min.y,
+              (i & 4) ? bb.max.z : bb.min.z
+            ).applyMatrix4(localMat);
+            box.expandByPoint(v);
+          }
+        });
+        return box;
+      }
+
+      function setCapVisible(visible) {
+        capSliceMeshes.forEach((mesh) => { mesh.visible = visible; });
+      }
+
+      function rebuildCapSliceMeshes(sourceMeshes) {
+        capSliceMeshes = [];
+        if (capSliceGroup && capSliceGroup.parent) capSliceGroup.parent.remove(capSliceGroup);
+        capSliceGroup = new THREE.Group();
+        placementRoot.add(capSliceGroup);
+        placementRoot.updateMatrixWorld(true);
+        const rootInv = new THREE.Matrix4().copy(placementRoot.matrixWorld).invert();
+        const capMat = new THREE.MeshBasicMaterial({
+          color: 0xe91e63, side: THREE.DoubleSide, depthTest: true, depthWrite: true,
+          polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
+          clippingPlanes: [clipPlaneWorld, backClipPlaneWorld],
+        });
+        sourceMeshes.forEach((child) => {
+          child.updateWorldMatrix(true, false);
+          const localMat = new THREE.Matrix4().multiplyMatrices(rootInv, child.matrixWorld);
+          const sliceMesh = new THREE.Mesh(child.geometry, capMat);
+          localMat.decompose(sliceMesh.position, sliceMesh.quaternion, sliceMesh.scale);
+          sliceMesh.renderOrder = 3;
+          sliceMesh.visible = false;
+          capSliceGroup.add(sliceMesh);
+          capSliceMeshes.push(sliceMesh);
+        });
+      }
+
+      function updateBackClipPlane() {
+        if (!modelBoxLocal) return;
+        const range = modelBoxLocal.max[clipAxis] - modelBoxLocal.min[clipAxis];
+        const thickness = range * 0.04;
+        backClipPlaneLocal.normal.copy(clipPlaneLocal.normal).negate();
+        backClipPlaneLocal.constant = thickness - clipPlaneLocal.constant;
+      }
+
+      function updateSliderRange(keepValue = false) {
+        const prev = keepValue ? parseFloat(clipSlider.value) || 0 : 0;
+        clipSlider.min = 0;
+        clipSlider.max = 100;
+        clipSlider.step = 0.5;
+        clipSlider.value = keepValue ? String(Math.min(100, Math.max(0, prev))) : '0';
+      }
+
+      function setActiveAxisButton() {
+        axisButtons.forEach((b) => {
+          const isActive = b.dataset.axis === clipAxis;
+          b.classList.toggle('active', isActive);
+          b.setAttribute('aria-pressed', String(isActive));
+        });
+        clipFlipBtn.style.visibility = clipAxis === 'z' ? 'hidden' : 'visible';
+      }
+
+      function applyClipState() {
+        if (!modelBoxLocal) return;
+        if (!clipEnabled) {
+          clipPlaneLocal.constant = OUTSIDE_CONSTANT;
+          setCapVisible(false);
+          return;
+        }
+        const pct = parseFloat(clipSlider.value) / 100;
+        const a = clipAxis;
+        const axMin = modelBoxLocal.min[a];
+        const axMax = modelBoxLocal.max[a];
+        const range = axMax - axMin;
+        const eps = range * 0.002;
+        const flip = (a !== 'z') && flipSide[a];
+        if (!flip) {
+          clipPlaneLocal.normal.copy(AXES[a]).negate();
+          clipPlaneLocal.constant = axMax + eps - pct * (range + 2 * eps);
+        } else {
+          clipPlaneLocal.normal.copy(AXES[a]);
+          clipPlaneLocal.constant = -axMin + eps - pct * (range + 2 * eps);
+        }
+        const capVisible = pct > 0.001;
+        setCapVisible(capVisible);
+        if (capVisible) updateBackClipPlane();
+      }
+
+      // Igual que en modo Marcador: una capa marcada "no seccionable" (ver
+      // tijeras en el panel Capas) se queda siempre entera.
+      function isSectionableMesh(mesh) {
+        for (const e of layerEntries) {
+          if (e.sectionable) continue;
+          let p = mesh;
+          while (p) { if (p === e.node) return false; p = p.parent; }
+        }
+        return true;
+      }
+
+      // --- Sombra sobre "_shadow" (portado del modo Marcador) ---
+      function isFlatMesh(mesh) {
+        const geo = mesh.geometry;
+        if (!geo) return false;
+        if (geo.userData._isFlatShadowMesh === undefined) {
+          if (!geo.boundingBox) geo.computeBoundingBox();
+          const size = new THREE.Vector3();
+          geo.boundingBox.getSize(size);
+          const dims = [size.x, size.y, size.z].sort((a, b) => a - b);
+          geo.userData._isFlatShadowMesh = dims[2] > 0 && (dims[0] / dims[2]) < 1e-3;
+        }
+        return geo.userData._isFlatShadowMesh;
+      }
+      function markShadowCaster(mesh, on) {
+        mesh.castShadow = on;
+        mesh.receiveShadow = on;
+        mesh.frustumCulled = false;
+        const flat = isFlatMesh(mesh);
+        forEachMeshMaterial(mesh, (mat) => { mat.shadowSide = flat ? THREE.DoubleSide : null; });
+      }
+      function setupShadowPlanes(model) {
+        const found = [];
+        model.traverse((child) => { if (child.isMesh && isShadowPlane(child)) found.push(child); });
+        if (!found.length) {
+          logDebug('No se ha encontrado ningun objeto "_shadow" en el GLB — el modelo no proyectara sombra sobre un receptor propio.');
+        }
+        shadowPlaneMeshes = found.map((child) => {
+          placementRoot.attach(child);
+          child.material = new THREE.ShadowMaterial({ opacity: SHADOW_OPACITY, transparent: true });
+          child.material.side = THREE.DoubleSide;
+          child.material.depthWrite = false;
+          child.receiveShadow = true;
+          child.castShadow = false;
+          child.frustumCulled = false;
+          child.visible = shadowsEnabled;
+          return child;
+        });
+      }
+      function restoreShadowPlanes() {
+        shadowPlaneMeshes.forEach((child) => {
+          if (!(child.material instanceof THREE.ShadowMaterial)) {
+            child.material = new THREE.ShadowMaterial({ opacity: SHADOW_OPACITY, transparent: true });
+          }
+          child.material.side = THREE.DoubleSide;
+          child.receiveShadow = true;
+          child.castShadow = false;
+          child.material.clippingPlanes = null;
+          child.material.depthWrite = false;
+          child.frustumCulled = false;
+          child.visible = shadowsEnabled;
+        });
+      }
+      function applyShadowState(on) {
+        shadowsEnabled = on;
+        renderer.shadowMap.enabled = on;
+        renderer.shadowMap.autoUpdate = true;
+        renderer.shadowMap.needsUpdate = on;
+        dirLight.castShadow = on;
+        dirLight.shadow.autoUpdate = true;
+        dirLight.shadow.needsUpdate = on;
+        shadowPlaneMeshes.forEach((child) => { child.receiveShadow = on; child.visible = on; });
+        if (loadedModel) loadedModel.traverse((child) => {
+          if (!child.isMesh || isShadowPlane(child)) return;
+          markShadowCaster(child, on);
+        });
+        if (on) updateShadowCameraFrustum();
       }
 
       function rebuildWireMeshes(sourceMeshes) {
@@ -2651,12 +2913,41 @@
         btn.addEventListener('click', () => applyVisualizationMode(mode));
       });
 
+      setActiveAxisButton();
+      clipEnabledChk.checked = false;
+      clipEnabledChk.addEventListener('change', () => {
+        clipEnabled = clipEnabledChk.checked;
+        applyClipState();
+      });
+      clipSlider.addEventListener('input', applyClipState);
+      clipFlipBtn.addEventListener('click', () => {
+        flipSide[clipAxis] = !flipSide[clipAxis];
+        applyClipState();
+      });
+      axisButtons.forEach((btn) => {
+        btn.addEventListener('click', () => {
+          clipAxis = btn.dataset.axis;
+          setActiveAxisButton();
+          updateSliderRange(true);
+          applyClipState();
+        });
+      });
+      document.getElementById('shadowsChk').addEventListener('change', (e) => {
+        applyShadowState(e.target.checked);
+      });
+
       function refreshFloorBindings() {
         if (!loadedModel) return;
+        const { visibleMeshes, cutterMeshes } = splitVisibleAndCutterMeshes(loadedModel);
+        cutterMeshes.forEach((m) => { m.visible = false; m.frustumCulled = false; });
+        currentVisibleMeshes = visibleMeshes;
+        currentCutterMeshes = cutterMeshes;
+        modelBoxLocal = computeBoxLocal(visibleMeshes, loadedModel);
+
         allStateMeshes = [];
         const activeRoot = stateEntries.length >= 2 ? stateEntries[activeStateIndex]?.node : null;
         loadedModel.traverse((child) => {
-          if (!child.isMesh || isTechnicalMesh(child)) return;
+          if (!child.isMesh || isCutterMesh(child) || isShadowPlane(child) || isMarkerRef(child)) return;
           if (activeRoot) {
             let p = child; let inside = false;
             while (p) { if (p === activeRoot) { inside = true; break; } p = p.parent; }
@@ -2664,8 +2955,25 @@
           }
           allStateMeshes.push(child);
         });
+
+        allStateMeshes.forEach((child) => {
+          const clip = isSectionableMesh(child) ? [clipPlaneWorld] : null;
+          forEachMeshMaterial(child, (mat) => {
+            mat.clippingPlanes = clip;
+            mat.side = THREE.DoubleSide;
+          });
+        });
+
+        const capSourcePool = currentCutterMeshes.length ? currentCutterMeshes : currentVisibleMeshes;
+        rebuildCapSliceMeshes(capSourcePool.filter(isSectionableMesh));
+
+        allStateMeshes.forEach((child) => markShadowCaster(child, shadowsEnabled));
         rebuildWireMeshes(allStateMeshes);
+        updateSliderRange(true);
         applyVisualizationMode(currentViewMode);
+        restoreShadowPlanes();
+        applyClipState();
+        if (shadowsEnabled) updateShadowCameraFrustum();
       }
 
       function renderStateButtons() {
@@ -2709,13 +3017,37 @@
           });
           btn.innerHTML = `<span class="layerDot"></span>${entry.uiLabel}`;
           btn.appendChild(colorPick);
+
+          const sectionToggle = document.createElement('button');
+          sectionToggle.type = 'button';
+          sectionToggle.className = 'layerSectionToggle' + (entry.sectionable ? '' : ' off');
+          sectionToggle.textContent = '✂';
+          sectionToggle.title = entry.sectionable
+            ? 'Se corta con la Sección (toca para que se quede siempre entera)'
+            : 'Se queda siempre entera (toca para que SÍ se corte con la Sección)';
+          sectionToggle.setAttribute('aria-pressed', String(entry.sectionable));
+          sectionToggle.addEventListener('click', (e) => {
+            e.stopPropagation();
+            entry.sectionable = !entry.sectionable;
+            sectionToggle.classList.toggle('off', !entry.sectionable);
+            sectionToggle.setAttribute('aria-pressed', String(entry.sectionable));
+            sectionToggle.title = entry.sectionable
+              ? 'Se corta con la Sección (toca para que se quede siempre entera)'
+              : 'Se queda siempre entera (toca para que SÍ se corte con la Sección)';
+            refreshFloorBindings();
+          });
+          btn.appendChild(sectionToggle);
+
           const toggleLayer = () => {
             entry.visible = !entry.visible;
             entry.node.visible = entry.visible;
             btn.className = 'layerBtn' + (entry.visible ? '' : ' off');
             btn.setAttribute('aria-pressed', String(entry.visible));
             btn.querySelector('.layerDot').style.background = entry.visible ? '#5be7ff' : '#1e3040';
-            applyVisualizationMode(currentViewMode);
+            // Igual que en modo Marcador: hace falta refreshFloorBindings()
+            // completo (no solo applyVisualizationMode) para que el relleno
+            // de Seccion no se quede obsoleto al encender/apagar capas.
+            refreshFloorBindings();
           };
           btn.addEventListener('click', toggleLayer);
           btn.addEventListener('keydown', (e) => {
@@ -2738,7 +3070,7 @@
         statePanel.classList.remove('hidden');
       }
       function setupLayers(root) {
-        layerEntries = findRootsByRegex(root, LAYER_RE, true).map((node) => ({ node, visible: true, uiLabel: layerLabel(node.name) }));
+        layerEntries = findRootsByRegex(root, LAYER_RE, true).map((node) => ({ node, visible: true, sectionable: true, uiLabel: layerLabel(node.name) }));
         if (!layerEntries.length) { layerPanel.classList.add('hidden'); return; }
         layerEntries.forEach((e) => { e.node.visible = true; });
         renderLayerButtons();
@@ -2802,6 +3134,8 @@
       // cuelga dentro. ---
       function attachModelToRoot() {
         placementRoot.add(loadedModel);
+        setupShadowPlanes(loadedModel);
+        applyShadowState(shadowsEnabled);
         setupStates(loadedModel);
         setupLayers(loadedModel);
         refreshFloorBindings();
@@ -2830,9 +3164,24 @@
         layerEntries = [];
         activeStateIndex = 0;
         allStateMeshes = [];
+        currentVisibleMeshes = [];
+        currentCutterMeshes = [];
         if (wireGroup && wireGroup.parent) wireGroup.parent.remove(wireGroup);
         wireGroup = null;
         wireMeshes = [];
+        if (capSliceGroup && capSliceGroup.parent) capSliceGroup.parent.remove(capSliceGroup);
+        capSliceGroup = null;
+        capSliceMeshes = [];
+        // shadowPlaneMeshes cuelgan directo de placementRoot (setupShadowPlanes
+        // los reparenta con attach()), no de loadedModel - hay que quitarlos
+        // aparte o el "_shadow" del modelo anterior se queda flotando.
+        shadowPlaneMeshes.forEach((mesh) => {
+          if (mesh.parent) mesh.parent.remove(mesh);
+          mesh.geometry?.dispose();
+          forEachMeshMaterial(mesh, (mat) => mat.dispose());
+        });
+        shadowPlaneMeshes = [];
+        modelBoxLocal = null;
         if (loadedModel) {
           if (loadedModel.parent) loadedModel.parent.remove(loadedModel);
           disposeModelTree(loadedModel);
@@ -2853,18 +3202,18 @@
           // convencion habitual de glTF, 1 unidad = 1 metro real.
           baseModelScale = 1;
           loadedModel.scale.setScalar(1);
-          // Ocultar objetos tecnicos (_shadow, _marker_ref, _cutter): este
-          // modo aun no implementa Seccion ni plano de sombra propio, y sin
-          // ocultarlos se pintan tal cual vienen del GLB como geometria
-          // suelta flotando en la escena.
-          let technicalCount = 0;
+          // "_marker_ref" no aplica aqui (no hay marcador que calibrar) -
+          // se oculta sin mas. "_shadow" y "_cutter" SI se soportan ya
+          // (Seccion y Sombra), los gestionan setupShadowPlanes()/
+          // refreshFloorBindings() aparte, no se ocultan a lo bruto.
+          let hiddenCount = 0;
           loadedModel.traverse((child) => {
-            if (child.isMesh && isTechnicalMesh(child)) { child.visible = false; technicalCount++; }
+            if (child.isMesh && isMarkerRef(child)) { child.visible = false; hiddenCount++; }
           });
-          if (technicalCount) logDebug(`${technicalCount} objeto(s) tecnico(s) (_shadow/_marker_ref/_cutter) ocultos — no soportados aun en modo Suelo.`);
+          if (hiddenCount) logDebug(`${hiddenCount} objeto(s) "_marker_ref" ocultos — no aplica en modo Suelo.`);
           const box = new THREE.Box3();
           loadedModel.traverse((child) => {
-            if (child.isMesh && !isTechnicalMesh(child)) box.expandByObject(child);
+            if (child.isMesh && !isShadowPlane(child) && !isMarkerRef(child) && !isCutterMesh(child)) box.expandByObject(child);
           });
           const sphere = box.isEmpty() ? new THREE.Sphere(new THREE.Vector3(), 1) : box.getBoundingSphere(new THREE.Sphere());
           modelRadius = Math.max(sphere.radius, 0.1);
@@ -2995,6 +3344,17 @@
               setStatus('marker', 'Superficie: buscando...', 'pending');
             }
           }
+        }
+        if (placementRoot) {
+          placementRoot.updateMatrixWorld(true);
+          const m4 = placementRoot.matrixWorld;
+          clipPlaneWorld.copy(clipPlaneLocal).applyMatrix4(m4);
+          backClipPlaneWorld.copy(backClipPlaneLocal).applyMatrix4(m4);
+        }
+        if (shadowsEnabled) {
+          dirLight.updateMatrixWorld(true);
+          dirLightTarget.updateMatrixWorld(true);
+          dirLight.shadow.camera.updateMatrixWorld(true);
         }
         renderer.render(scene, camera);
       });
