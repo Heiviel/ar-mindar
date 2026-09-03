@@ -2081,10 +2081,33 @@
     // resuelve false).
     // ===================================================================
     startFloorBtn.addEventListener('click', async () => {
+      // Cualquier fallo (no solo el de requestSession) fuerza el panel de
+      // Diagnostico visible: sin esto, un error con diagnostico apagado se
+      // queda mudo en consola y en pantalla no pasa nada — imposible de
+      // depurar en remoto ("toco el boton y no activa la camara").
+      try {
+        await startFloorMode();
+      } catch (err) {
+        logDebug(`Error inesperado en modo Suelo: ${err?.message || err}${err?.stack ? '\n' + err.stack.split('\n').slice(0, 3).join(' | ') : ''}`, 'error');
+        setStatus('cam', `Cámara: ERROR - ${err?.message || err}`, 'err');
+        diagnosticsEnabled = true;
+        diagnosticsChk.checked = true;
+        applyDiagnosticsVisibility();
+      }
+    });
+
+    async function startFloorMode() {
       document.getElementById('startChoice').remove();
       hint.hidden = false;
       hint.textContent = 'Mueve el móvil despacio hasta detectar el suelo o una mesa (aro azul) y toca la pantalla para colocar el modelo';
+      // Modo nuevo/experimental: mostrar diagnostico desde ya, sin esperar
+      // a que algo falle, para que el estado "Camara:"/"Superficie:" sea
+      // visible mientras se prueba en dispositivo.
+      diagnosticsEnabled = true;
+      diagnosticsChk.checked = true;
+      applyDiagnosticsVisibility();
       logDebug('Iniciando modo Suelo/mesa (WebXR Hit Test)...');
+      setStatus('cam', 'Cámara: solicitando sesión WebXR...', 'pending');
 
       // Herramientas aun no portadas a este modo.
       document.getElementById('clipPanel').classList.add('hidden');
@@ -2102,6 +2125,8 @@
         setStatus('cam', `Cámara: ERROR WebXR - ${err?.message || err}`, 'err');
         return;
       }
+      logDebug('Sesion WebXR iniciada OK', 'ok');
+      setStatus('cam', 'Cámara: sesión WebXR activa ✓', 'ok');
 
       const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
       renderer.setPixelRatio(window.devicePixelRatio);
@@ -2542,7 +2567,7 @@
         }
         renderer.render(scene, camera);
       });
-    });
+    }
   </script>
 </body>
 </html>
