@@ -2090,37 +2090,59 @@
     // resuelve false).
     // ===================================================================
     startFloorBtn.addEventListener('click', async () => {
-      // Cualquier fallo (no solo el de requestSession) fuerza el panel de
-      // Diagnostico visible: sin esto, un error con diagnostico apagado se
-      // queda mudo en consola y en pantalla no pasa nada — imposible de
-      // depurar en remoto ("toco el boton y no activa la camara").
       try {
         await startFloorMode();
       } catch (err) {
         logDebug(`Error inesperado en modo Suelo: ${err?.message || err}${err?.stack ? '\n' + err.stack.split('\n').slice(0, 3).join(' | ') : ''}`, 'error');
         setStatus('cam', `Cámara: ERROR - ${err?.message || err}`, 'err');
-        diagnosticsEnabled = true;
-        diagnosticsChk.checked = true;
-        applyDiagnosticsVisibility();
       }
     });
 
+    // Reanudar tras el selector de archivos = reiniciar startFloorMode()
+    // ENTERO (renderer, sesion WebXR y camara nuevos de cero), no rebindear
+    // la sesion sobre el renderer anterior: eso ultimo se probo y en
+    // dispositivo real dejaba la imagen de camara congelada en el ultimo
+    // frame capturado antes del selector. Registrado UNA sola vez aqui
+    // (fuera de startFloorMode, que se puede volver a ejecutar varias
+    // veces) porque su comportamiento no depende de ninguna variable local
+    // de una ejecucion concreta.
+    const resumeArBtn = document.getElementById('resumeArBtn');
+    resumeArBtn.addEventListener('click', async () => {
+      resumeArBtn.hidden = true;
+      try {
+        await startFloorMode();
+      } catch (err) {
+        logDebug(`Error al reiniciar modo Suelo: ${err?.message || err}`, 'error');
+        setStatus('cam', `Cámara: ERROR - ${err?.message || err}`, 'err');
+      }
+    });
+    // Se pisan/quitan en cada ejecucion de startFloorMode() para que no se
+    // acumulen renderers WebGL huerfanos ni listeners duplicados en
+    // modelFileInput tras varios reinicios (ver dentro de la funcion).
+    let currentRenderer = null;
+    let currentModelChangeHandler = null;
+    let currentModelClickHandler = null;
+
     async function startFloorMode() {
-      document.getElementById('startChoice').remove();
+      document.getElementById('startChoice')?.remove();
       hint.hidden = false;
       hint.textContent = 'Mueve el móvil despacio hasta detectar el suelo o una mesa (aro azul) y toca la pantalla para colocar el modelo';
-      // Modo nuevo/experimental: mostrar diagnostico desde ya, sin esperar
-      // a que algo falle, para que el estado "Camara:"/"Superficie:" sea
-      // visible mientras se prueba en dispositivo.
-      diagnosticsEnabled = true;
-      diagnosticsChk.checked = true;
-      applyDiagnosticsVisibility();
       logDebug('Iniciando modo Suelo/mesa (WebXR Hit Test)...');
       setStatus('cam', 'Cámara: solicitando sesión WebXR...', 'pending');
 
       // Herramientas aun no portadas a este modo.
       document.getElementById('clipPanel').classList.add('hidden');
       document.getElementById('shadowRow').style.display = 'none';
+
+      // Desmontar el renderer/sesion de una ejecucion anterior (reinicio
+      // tras el selector de archivos): parar su bucle antes de que exista
+      // uno nuevo, o quedarian dos renderers dibujando a la vez.
+      if (currentRenderer) {
+        currentRenderer.setAnimationLoop(null);
+        currentRenderer.domElement.remove();
+        currentRenderer.dispose();
+        currentRenderer = null;
+      }
 
       const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
       renderer.setPixelRatio(window.devicePixelRatio);
@@ -2132,6 +2154,7 @@
       renderer.domElement.style.position = 'absolute';
       renderer.domElement.style.inset = '0';
       document.querySelector('#container').appendChild(renderer.domElement);
+      currentRenderer = renderer;
 
       const scene = new THREE.Scene();
       const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 50);
@@ -2705,42 +2728,27 @@
       loadFloorModel(resolvedModelSrc, pickedModelFile?.name || resolvedModelSrc);
 
       // Cambiar de modelo SIN salir del modo Suelo: reutiliza el mismo
-      // selector de archivo del panel "Modelo y marcador" (el listener de
-      // arriba, registrado al cargar la pagina, ya deja actualizados
-      // resolvedModelSrc/pickedModelFile antes de que este se ejecute). La
-      // colocacion actual (posicion/rotacion/escala) NO se pierde.
+      // selector de archivo del panel "Modelo y marcador". Como
+      // startFloorMode() ahora puede volver a ejecutarse entera (ver mas
+      // abajo, reinicio tras el selector), hay que quitar el listener
+      // anterior antes de poner uno nuevo — si no, tras 2 reinicios el
+      // "change" dispararia loadFloorModel() dos veces con closures de
+      // sesiones distintas.
+      let expectingFileDialog = false;
       const modelFileInputEl = document.getElementById('modelFileInput');
-      modelFileInputEl.addEventListener('change', () => {
-        loadFloorModel(resolvedModelSrc, pickedModelFile?.name || resolvedModelSrc);
-      });
+      if (currentModelChangeHandler) modelFileInputEl.removeEventListener('change', currentModelChangeHandler);
+      if (currentModelClickHandler) modelFileInputEl.removeEventListener('click', currentModelClickHandler);
+      currentModelChangeHandler = () => loadFloorModel(resolvedModelSrc, pickedModelFile?.name || resolvedModelSrc);
+      // "click" en el input marca que viene un dialogo nativo: en Android
+      // eso termina la sesion WebXR activa (el sistema le quita la
+      // pantalla completa al navegador). Se usa en el listener de "end"
+      // del bucle de render para saber que ese cierre es "esperado".
+      currentModelClickHandler = () => { expectingFileDialog = true; };
+      modelFileInputEl.addEventListener('change', currentModelChangeHandler);
+      modelFileInputEl.addEventListener('click', currentModelClickHandler);
       // El selector de marcador (.mind) no aplica a este modo — no hay
       // marcador impreso que reconocer.
       document.getElementById('targetFileInput').closest('.row').hidden = true;
-
-      // Reanudar la sesion WebXR tras el selector de archivos (ver el
-      // "if (expectingFileDialog)" en el listener de "end" mas arriba):
-      // "click" en el input marca que viene un dialogo nativo. Reanudar NO
-      // puede hacerse solo, ni siquiera al recuperar el foco de la pagina:
-      // requestSession() exige "user activation" (un toque real, dentro del
-      // propio handler de un evento de usuario) y recuperar el foco no
-      // cuenta como tal para el navegador — de ahi el boton "Reanudar
-      // camara AR", que SI es un toque real.
-      let expectingFileDialog = false;
-      const resumeArBtn = document.getElementById('resumeArBtn');
-      modelFileInputEl.addEventListener('click', () => { expectingFileDialog = true; });
-      resumeArBtn.addEventListener('click', async () => {
-        resumeArBtn.hidden = true;
-        setStatus('cam', 'Cámara: reanudando...', 'pending');
-        // Desenlazar explicitamente + una pequena espera antes de repedir
-        // sesion: en Android, pedir "immersive-ar" de nuevo justo tras el
-        // cierre anterior a veces deja la camara mostrando el ultimo frame
-        // capturado en vez de imagen en vivo (el recurso de camara no le
-        // ha dado tiempo a liberarse antes de que la nueva sesion lo
-        // reclame). Es la mitigacion habitual para ese tipo de carrera.
-        try { renderer.xr.setSession(null); } catch (e) { /* ya estaba desenlazada */ }
-        await new Promise((resolve) => setTimeout(resolve, 400));
-        await requestAndBindXRSession();
-      });
 
       // --- Bucle WebXR: hit-test + render. Patron estandar de three.js
       // (ver ejemplo oficial webxr_ar_hittest). ---
