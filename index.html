@@ -1573,7 +1573,17 @@
             btn.className = 'layerBtn' + (entry.visible ? '' : ' off');
             btn.setAttribute('aria-pressed', String(entry.visible));
             btn.querySelector('.layerDot').style.background = entry.visible ? '#5be7ff' : '#1e3040';
-            applyVisualizationMode(currentViewMode);
+            // Antes solo llamaba a applyVisualizationMode(): eso actualiza
+            // sombreado/alambrico, pero los clones de relleno de Seccion
+            // (capSliceMeshes) NO se regeneran ahi, se quedan con la foto de
+            // visibilidad de la ULTIMA vez que corrio refreshModelBindings.
+            // Resultado: si apagabas una capa, su relleno de corte se
+            // quedaba "fantasma" (seguia pintandose aunque la capa real ya
+            // no); si encendias una que estaba apagada al cargar, su corte
+            // salia hueco (nunca tuvo clon de relleno). refreshModelBindings
+            // recalcula todo eso (y de paso ya hace tambien lo del modo de
+            // visualizacion), asi que sustituye a la llamada anterior.
+            refreshModelBindings(true);
           };
           btn.addEventListener('click', toggleLayer);
           btn.addEventListener('keydown', (e) => {
