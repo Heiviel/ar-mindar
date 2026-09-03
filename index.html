@@ -2470,7 +2470,7 @@
           const s = twoTouchState(e.touches);
           const newScale = THREE.MathUtils.clamp(gesture.startScale * (s.dist / gesture.startDist), 0.05, 20);
           placementRoot.scale.setScalar(newScale);
-          placementRoot.rotation.y = gesture.startRotY + (s.angle - gesture.startAngle);
+          placementRoot.rotation.y = gesture.startRotY - (s.angle - gesture.startAngle);
           return;
         }
         if (singleTouch && e.touches.length === 1 && placementRoot) {
@@ -2748,13 +2748,23 @@
         clipSlider.value = keepValue ? String(Math.min(100, Math.max(0, prev))) : '0';
       }
 
+      // Los botones Planta/Alzado/Perfil son los mismos <button> del HTML
+      // que en modo Marcador (data-axis="z"/"x"/"y"), pensados para su
+      // convencion: alli el anchor de MindAR tiene "arriba" en Z porque el
+      // marcador impreso suele estar plano sobre una mesa. Aqui, con el
+      // modelo ya enderezado (Z-up forzado, ver mas arriba), el "arriba"
+      // real es Y - asi que "Planta" (corte horizontal, arriba/abajo) debe
+      // mapear a Y, no a Z, o el boton corta por el eje equivocado.
+      const FLOOR_AXIS_MAP = { z: 'y', y: 'z', x: 'x' };
       function setActiveAxisButton() {
         axisButtons.forEach((b) => {
-          const isActive = b.dataset.axis === clipAxis;
+          const isActive = FLOOR_AXIS_MAP[b.dataset.axis] === clipAxis;
           b.classList.toggle('active', isActive);
           b.setAttribute('aria-pressed', String(isActive));
         });
-        clipFlipBtn.style.visibility = clipAxis === 'z' ? 'hidden' : 'visible';
+        // "Planta" (arriba/abajo, sin lado que invertir) es aqui clipAxis
+        // === 'y', no 'z' - mismo motivo que el mapeo de arriba.
+        clipFlipBtn.style.visibility = clipAxis === 'y' ? 'hidden' : 'visible';
       }
 
       function applyClipState() {
@@ -2770,7 +2780,8 @@
         const axMax = modelBoxLocal.max[a];
         const range = axMax - axMin;
         const eps = range * 0.002;
-        const flip = (a !== 'z') && flipSide[a];
+        // "y" es aqui el eje sin lado que invertir (ver comentario arriba).
+        const flip = (a !== 'y') && flipSide[a];
         if (!flip) {
           clipPlaneLocal.normal.copy(AXES[a]).negate();
           clipPlaneLocal.constant = axMax + eps - pct * (range + 2 * eps);
@@ -2782,6 +2793,7 @@
         setCapVisible(capVisible);
         if (capVisible) updateBackClipPlane();
       }
+
 
       // Igual que en modo Marcador: una capa marcada "no seccionable" (ver
       // tijeras en el panel Capas) se queda siempre entera.
@@ -2926,7 +2938,7 @@
       });
       axisButtons.forEach((btn) => {
         btn.addEventListener('click', () => {
-          clipAxis = btn.dataset.axis;
+          clipAxis = FLOOR_AXIS_MAP[btn.dataset.axis];
           setActiveAxisButton();
           updateSliderRange(true);
           applyClipState();
@@ -3218,23 +3230,13 @@
           const sphere = box.isEmpty() ? new THREE.Sphere(new THREE.Vector3(), 1) : box.getBoundingSphere(new THREE.Sphere());
           modelRadius = Math.max(sphere.radius, 0.1);
           logDebug(`Modelo (modo suelo): radio aprox. ${modelRadius.toFixed(2)}m — si no coincide con el tamaño real esperado, revisa las unidades de exportacion en Blender.`);
-          // Revelar el interruptor Z-up solo tras cargar: en marcador nunca
-          // se usa (fila oculta por defecto en el HTML), y aqui no tiene
-          // sentido mostrarlo antes de saber si hay modelo que corregir.
-          const zUpFixRow = document.getElementById('zUpFixRow');
-          const zUpFixChk = document.getElementById('zUpFixChk');
-          zUpFixRow.hidden = false;
-          // Marcado por defecto: el flujo de exportacion habitual de este
-          // proyecto deja los GLB en Z-up (Blender nativo, sin conversion a
-          // Y-up), asi que lo normal es necesitar la correccion. Se puede
-          // desmarcar si algun modelo puntual ya viene en Y-up.
-          zUpFixChk.checked = true;
+          // Z-up forzado siempre, sin interruptor: todo el flujo de
+          // exportacion de este proyecto deja los GLB en Z-up nativo de
+          // Blender (sin conversion a Y-up), y dejarlo opcional generaba
+          // inconsistencias con la Seccion (el eje "arriba" real cambia
+          // segun si la correccion esta aplicada o no, y los botones
+          // Planta/Alzado/Perfil necesitan saber cual es de verdad).
           loadedModel.rotation.x = -Math.PI / 2;
-          zUpFixChk.onchange = () => {
-            loadedModel.rotation.x = zUpFixChk.checked ? -Math.PI / 2 : 0;
-            loadedModel.updateMatrixWorld(true);
-            if (placementRoot) refreshFloorBindings();
-          };
           if (gltf.animations && gltf.animations.length > 0) {
             mixer = new THREE.AnimationMixer(loadedModel);
             gltf.animations.forEach((clip) => {
