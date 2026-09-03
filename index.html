@@ -890,7 +890,8 @@
       let clipEnabled = false;
       let shadowsEnabled = false;
       let shadowPlaneMeshes = [];
-      let modelBox = null;
+      let modelBox = null;       // espacio de MUNDO (usa expandByObject/matrixWorld) - lo usa computeShadowUp()
+      let modelBoxLocal = null;  // espacio LOCAL del anchor - lo usa la Seccion (ver computeBoxLocal)
       const flipSide = { x: false, y: false, z: false };
       const backClipPlaneLocal = new THREE.Plane();
       const backClipPlaneWorld = new THREE.Plane();
@@ -1031,6 +1032,47 @@
         const box = new THREE.Box3();
         box.makeEmpty();
         meshes.forEach((m) => box.expandByObject(m));
+        return box;
+      }
+
+      // Igual que computeBoxFromMeshes, pero en espacio LOCAL del anchor
+      // (mismo patron que computeShadowBoundsLocal): transforma los 8
+      // vertices de la bounding box de cada malla por su matriz world
+      // relativa al anchor (anchorInv * matrixWorld), en vez de dejar la
+      // caja en espacio de mundo. La Seccion necesita esto porque
+      // clipPlaneLocal se expresa en espacio local y el bucle de render
+      // solo aplica anchor.group.matrixWorld UNA vez para pasarlo a mundo
+      // (clipPlaneWorld); si se alimenta con una caja ya en mundo (como
+      // hacia antes, reusando modelBox), esa transformacion se aplicaba
+      // DOS veces y el plano de corte acababa lejísimos del modelo real -
+      // el slider entero (0-100%) se quedaba sin tocarlo nunca.
+      function computeBoxLocal(meshes, fallbackRoot) {
+        anchor.group.updateMatrixWorld(true);
+        const anchorInv = new THREE.Matrix4().copy(anchor.group.matrixWorld).invert();
+        const box = new THREE.Box3();
+        box.makeEmpty();
+        const source = meshes.length ? meshes : (() => {
+          const list = [];
+          fallbackRoot.traverse((child) => { if (child.isMesh) list.push(child); });
+          return list;
+        })();
+        const localMat = new THREE.Matrix4();
+        const v = new THREE.Vector3();
+        source.forEach((m) => {
+          if (!m.geometry) return;
+          if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+          m.updateWorldMatrix(true, false);
+          localMat.multiplyMatrices(anchorInv, m.matrixWorld);
+          const bb = m.geometry.boundingBox;
+          for (let i = 0; i < 8; i++) {
+            v.set(
+              (i & 1) ? bb.max.x : bb.min.x,
+              (i & 2) ? bb.max.y : bb.min.y,
+              (i & 4) ? bb.max.z : bb.min.z
+            ).applyMatrix4(localMat);
+            box.expandByPoint(v);
+          }
+        });
         return box;
       }
 
@@ -1287,8 +1329,8 @@
       }
 
       function updateBackClipPlane() {
-        if (!modelBox) return;
-        const range = modelBox.max[clipAxis] - modelBox.min[clipAxis];
+        if (!modelBoxLocal) return;
+        const range = modelBoxLocal.max[clipAxis] - modelBoxLocal.min[clipAxis];
         const thickness = range * 0.04;
         backClipPlaneLocal.normal.copy(clipPlaneLocal.normal).negate();
         backClipPlaneLocal.constant = thickness - clipPlaneLocal.constant;
@@ -1312,7 +1354,7 @@
       }
 
       function applyClipState() {
-        if (!modelBox) return;
+        if (!modelBoxLocal) return;
         if (!clipEnabled) {
           clipPlaneLocal.constant = OUTSIDE_CONSTANT;
           setCapVisible(false);
@@ -1320,8 +1362,8 @@
         }
         const pct = parseFloat(clipSlider.value) / 100;
         const a = clipAxis;
-        const axMin = modelBox.min[a];
-        const axMax = modelBox.max[a];
+        const axMin = modelBoxLocal.min[a];
+        const axMax = modelBoxLocal.max[a];
         const range = axMax - axMin;
         const eps = range * 0.002;
         const flip = (a !== 'z') && flipSide[a];
@@ -1434,6 +1476,7 @@
         currentVisibleMeshes = visibleMeshes;
         currentCutterMeshes = cutterMeshes;
         modelBox = computeBoxFromMeshes(visibleMeshes, loadedModel);
+        modelBoxLocal = computeBoxLocal(visibleMeshes, loadedModel);
         computeShadowUp();
         computeShadowLightDir();
         updateShadowCameraFrustum();
@@ -1936,6 +1979,7 @@
         });
         shadowPlaneMeshes = [];
         modelBox = null;
+        modelBoxLocal = null;
         if (loadedModel) {
           if (loadedModel.parent) loadedModel.parent.remove(loadedModel);
           disposeModelTree(loadedModel);
