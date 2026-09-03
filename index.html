@@ -17,11 +17,16 @@
   }
   #container { width:100vw; height:100vh; position:relative; overflow:hidden; }
   #camBg { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
-  #startBtn {
+  #startChoice {
     position:absolute; z-index:10; left:50%; top:50%; transform:translate(-50%,-50%);
-    padding:14px 24px; font:16px system-ui, sans-serif; background:#111; color:#fff;
-    border:1px solid #fff; border-radius:8px;
+    display:flex; flex-direction:column; align-items:center; gap:10px; max-width:min(320px, 86vw);
   }
+  #startBtn, #startFloorBtn {
+    padding:14px 24px; font:16px system-ui, sans-serif; background:#111; color:#fff;
+    border:1px solid #fff; border-radius:8px; width:100%;
+  }
+  #startFloorBtn:disabled { opacity:.4; }
+  #startChoice .hint { color:#e6d27a; text-align:center; }
   #hint {
     position:absolute; z-index:10; left:0; right:0; bottom:16px; text-align:center;
     color:#fff; font:14px system-ui, sans-serif; opacity:.8; pointer-events:none;
@@ -224,7 +229,14 @@
     <video id="camBg" autoplay muted playsinline></video>
   </div>
   <p id="linkStatusMsg" hidden></p>
-  <button id="startBtn">Iniciar cámara AR</button>
+  <div id="startChoice">
+    <button id="startBtn">📷 Con marcador</button>
+    <button id="startFloorBtn">🖐 Suelo / mesa</button>
+    <p id="floorUnsupportedHint" class="hint" hidden>
+      Suelo/mesa (WebXR) no esta disponible en este navegador/dispositivo — usa Chrome en Android.
+      El modo con marcador sigue funcionando igual.
+    </p>
+  </div>
   <div id="hint" hidden>Enfoca el marcador impreso con la cámara</div>
   <div id="debugLog" hidden role="log" aria-live="polite"></div>
   <div id="arStatus" hidden role="status" aria-live="polite"></div>
@@ -326,7 +338,7 @@
           <input type="range" id="lightElevation" min="5" max="85" step="1" value="56" style="flex:1;margin:0 8px"/>
           <span id="lightElevationVal">56°</span>
         </div>
-        <div class="row">
+        <div class="row" id="shadowRow">
           <label><input type="checkbox" id="shadowsChk" /> Sombras (beta)</label>
         </div>
       </div>
@@ -710,8 +722,28 @@
 
     await resolveAssetsFromUrl();
 
+    // Modo "Suelo/mesa": WebXR Hit Test. Solo Chrome/Android con ARCore lo
+    // soporta hoy (Safari/iOS no implementa WebXR para AR) — se detecta y
+    // se deshabilita el boton con una explicacion en vez de dejar que falle
+    // al pulsarlo. isSessionSupported() no lanza si navigator.xr no existe
+    // gracias al optional chaining; en ese caso se resuelve directo a false.
+    const startFloorBtn = document.getElementById('startFloorBtn');
+    const floorUnsupportedHint = document.getElementById('floorUnsupportedHint');
+    (async () => {
+      let supported = false;
+      try {
+        supported = !!(await navigator.xr?.isSessionSupported?.('immersive-ar'));
+      } catch (err) {
+        logDebug(`No se pudo comprobar soporte WebXR: ${err?.message || err}`);
+      }
+      if (!supported) {
+        startFloorBtn.disabled = true;
+        floorUnsupportedHint.hidden = false;
+      }
+    })();
+
     startBtn.addEventListener('click', async () => {
-      startBtn.remove();
+      document.getElementById('startChoice').remove();
       hint.hidden = false;
       logDebug('Iniciando camara AR...');
 
@@ -2021,6 +2053,493 @@
           dirLight.shadow.camera.updateMatrixWorld(true);
         }
 
+        renderer.render(scene, camera);
+      });
+    });
+
+    // ===================================================================
+    // MODO "SUELO / MESA" (WebXR Hit Test) — sin marcador impreso.
+    //
+    // Autocontenido a proposito: NO toca ninguna variable/funcion del modo
+    // Marcador de arriba, para no arriesgar esa funcionalidad ya probada.
+    // Duplica un puñado de helpers pequeños (forEachMeshMaterial, regex de
+    // estados/capas) en vez de compartirlos, porque en el modo Marcador
+    // viven como funciones locales dentro del closure de "startBtn" y no
+    // son accesibles desde aqui sin refactorizar ese bloque (deliberado:
+    // cero riesgo de romper el modo Marcador).
+    //
+    // Alcance v1: Estados, Capas, Visualizacion (Sombreado/Alambrico/
+    // Hibrido), Animacion, Iluminacion (intensidad + direccion), escala de
+    // exhibicion. NO incluye "Seccion" ni el sistema de sombra sobre
+    // "_shadow" del modo Marcador (dependen del anchor de MindAR de forma
+    // mas profunda) — se podrian portar despues si el flujo base de
+    // colocacion via WebXR funciona bien en dispositivo real.
+    //
+    // Solo Chrome/Android con ARCore soporta WebXR "immersive-ar" hoy;
+    // Safari/iOS no lo implementa (ver deteccion mas arriba, startFloorBtn
+    // se deshabilita si navigator.xr.isSessionSupported('immersive-ar')
+    // resuelve false).
+    // ===================================================================
+    startFloorBtn.addEventListener('click', async () => {
+      document.getElementById('startChoice').remove();
+      hint.hidden = false;
+      hint.textContent = 'Mueve el móvil despacio hasta detectar el suelo o una mesa (aro azul) y toca la pantalla para colocar el modelo';
+      logDebug('Iniciando modo Suelo/mesa (WebXR Hit Test)...');
+
+      // Herramientas aun no portadas a este modo.
+      document.getElementById('clipPanel').classList.add('hidden');
+      document.getElementById('shadowRow').style.display = 'none';
+
+      let session;
+      try {
+        session = await navigator.xr.requestSession('immersive-ar', {
+          requiredFeatures: ['hit-test'],
+          optionalFeatures: ['dom-overlay'],
+          domOverlay: { root: document.body },
+        });
+      } catch (err) {
+        logDebug(`No se pudo iniciar sesion WebXR: ${err?.message || err}`, 'error');
+        setStatus('cam', `Cámara: ERROR WebXR - ${err?.message || err}`, 'err');
+        return;
+      }
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.xr.enabled = true;
+      renderer.xr.setReferenceSpaceType('local');
+      renderer.domElement.style.position = 'absolute';
+      renderer.domElement.style.inset = '0';
+      document.querySelector('#container').appendChild(renderer.domElement);
+      window.addEventListener('resize', () => {
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+      });
+
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 50);
+
+      const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1.2);
+      scene.add(light);
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      scene.add(dirLight);
+      const dirLightTarget = new THREE.Object3D();
+      scene.add(dirLightTarget);
+      dirLight.target = dirLightTarget;
+
+      // Reticula: aro que marca donde se colocaria el modelo al tocar.
+      const reticle = new THREE.Mesh(
+        new THREE.RingGeometry(0.07, 0.09, 32).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({ color: 0x5be7ff })
+      );
+      reticle.matrixAutoUpdate = false;
+      reticle.visible = false;
+      scene.add(reticle);
+
+      // placementRoot cumple aqui el mismo papel que "anchor.group" en el
+      // modo Marcador: un THREE.Group generico donde cuelga el modelo. La
+      // diferencia es COMO se mueve: alli lo reposiciona MindAR cada frame
+      // seguiendo el marcador impreso; aqui se fija UNA vez (o al re-tocar
+      // para reubicar) con la pose del hit-test, y a partir de ahi el
+      // usuario es quien se mueve alrededor (SLAM del propio dispositivo).
+      let placementRoot = null;
+      function placeAt(matrixArray) {
+        if (!placementRoot) {
+          placementRoot = new THREE.Group();
+          scene.add(placementRoot);
+          if (loadedModel && !loadedModel.parent) attachModelToRoot();
+        }
+        const m = new THREE.Matrix4().fromArray(matrixArray);
+        m.decompose(placementRoot.position, placementRoot.quaternion, placementRoot.scale);
+        placementRoot.scale.setScalar(1);
+        updateLightPosition();
+      }
+
+      const controller = renderer.xr.getController(0);
+      controller.addEventListener('select', () => {
+        if (!reticle.visible) return;
+        placeAt(reticle.matrix.elements);
+        hint.textContent = 'Modelo colocado — toca de nuevo el suelo/mesa para reubicarlo';
+      });
+      scene.add(controller);
+
+      // --- Helpers puros duplicados del modo Marcador (ver nota arriba) ---
+      function forEachMeshMaterial(mesh, cb) {
+        if (Array.isArray(mesh.material)) mesh.material.forEach((m) => m && cb(m));
+        else if (mesh.material) cb(mesh.material);
+      }
+      const STATE_RE = /^st\d+/i;
+      const LAYER_RE = /^ly\d+/i;
+      function parseStateInfo(name) {
+        const m = (name || '').trim().match(/^st(\d+)(?:_(.+))?$/i);
+        if (!m) return null;
+        const number = parseInt(m[1], 10);
+        return { number: Number.isFinite(number) ? number : Number.MAX_SAFE_INTEGER, uiLabel: (m[2] || '').trim() || m[1] };
+      }
+      function layerLabel(name) {
+        const m = (name || '').trim().match(/^ly\d+(?:_(.+))?$/i);
+        if (!m) return name;
+        const numLabel = (name.match(/^ly(\d+)/i) || [])[1] || name;
+        return (m[1] || '').trim() || numLabel;
+      }
+      function findRootsByRegex(root, re, labelFromLy) {
+        const found = [];
+        root.traverse((obj) => { if (obj !== root && re.test((obj.name || '').trim())) found.push(obj); });
+        const set = new Set(found);
+        return found
+          .filter((obj) => { let p = obj.parent; while (p) { if (set.has(p)) return false; p = p.parent; } return true; })
+          .sort((a, b) => {
+            const ia = parseStateInfo(labelFromLy ? a.name.replace(/^ly/i, 'st') : a.name);
+            const ib = parseStateInfo(labelFromLy ? b.name.replace(/^ly/i, 'st') : b.name);
+            const da = ia ? ia.number : Number.MAX_SAFE_INTEGER;
+            const db = ib ? ib.number : Number.MAX_SAFE_INTEGER;
+            if (da !== db) return da - db;
+            return (a.name || '').localeCompare(b.name || '');
+          });
+      }
+
+      let loadedModel = null;
+      let mixer = null;
+      let animDuration = 0;
+      let animPaused = false;
+      let modelRadius = 3;
+      let baseModelScale = 1;
+      const clock = new THREE.Clock();
+      let stateEntries = [];
+      let layerEntries = [];
+      let activeStateIndex = 0;
+      let allStateMeshes = [];
+      let currentViewMode = 'shaded';
+      let wireMeshes = [];
+      let wireGroup = null;
+      let wireColorHex = document.getElementById('wireColor').value;
+      let lightAzimuthDeg = parseFloat(document.getElementById('lightAzimuth').value);
+      let lightElevationDeg = parseFloat(document.getElementById('lightElevation').value);
+
+      const statePanel = document.getElementById('statePanel');
+      const stateButtons = document.getElementById('stateButtons');
+      const layerPanel = document.getElementById('layerPanel');
+      const layerButtons = document.getElementById('layerButtons');
+      const animPanel = document.getElementById('animPanel');
+      const animScrub = document.getElementById('animScrub');
+      const animTime = document.getElementById('animTime');
+      const viewButtons = {
+        shaded: document.getElementById('viewShaded'),
+        wire: document.getElementById('viewWire'),
+        hybrid: document.getElementById('viewHybrid'),
+      };
+
+      // Direccion de la luz: en WebXR el espacio de referencia "local" es
+      // SIEMPRE Y-up alineado con la gravedad (parte del spec), asi que a
+      // diferencia del modo Marcador no hace falta derivar el "arriba" de
+      // la normal de ningun plano — se puede asumir (0,1,0) directamente.
+      const worldUp = new THREE.Vector3(0, 1, 0);
+      const axisU = new THREE.Vector3(1, 0, 0);
+      const axisV = new THREE.Vector3(0, 0, 1);
+      function updateLightPosition() {
+        if (!placementRoot) return;
+        const az = THREE.MathUtils.degToRad(lightAzimuthDeg);
+        const el = THREE.MathUtils.degToRad(lightElevationDeg);
+        const dir = new THREE.Vector3()
+          .copy(worldUp).multiplyScalar(Math.sin(el))
+          .addScaledVector(axisU, Math.cos(el) * Math.cos(az))
+          .addScaledVector(axisV, Math.cos(el) * Math.sin(az))
+          .normalize();
+        const center = placementRoot.position;
+        dirLight.position.copy(center).addScaledVector(dir, modelRadius * 3);
+        dirLightTarget.position.copy(center);
+      }
+
+      function rebuildWireMeshes(sourceMeshes) {
+        wireMeshes = [];
+        if (wireGroup && wireGroup.parent) wireGroup.parent.remove(wireGroup);
+        wireGroup = new THREE.Group();
+        placementRoot.add(wireGroup);
+        placementRoot.updateMatrixWorld(true);
+        const rootInv = new THREE.Matrix4().copy(placementRoot.matrixWorld).invert();
+        const wireMat = new THREE.MeshBasicMaterial({
+          color: new THREE.Color(wireColorHex), wireframe: true,
+          depthTest: true, depthWrite: false, transparent: true, opacity: 0.9,
+        });
+        sourceMeshes.forEach((child) => {
+          child.updateWorldMatrix(true, false);
+          const localMat = new THREE.Matrix4().multiplyMatrices(rootInv, child.matrixWorld);
+          const w = new THREE.Mesh(child.geometry, wireMat);
+          localMat.decompose(w.position, w.quaternion, w.scale);
+          w.visible = false;
+          wireGroup.add(w);
+          wireMeshes.push({ w, source: child });
+        });
+      }
+
+      function applyVisualizationMode(mode) {
+        currentViewMode = mode;
+        const showFaces = mode !== 'wire';
+        const showWire = mode !== 'shaded';
+        allStateMeshes.forEach((mesh) => {
+          forEachMeshMaterial(mesh, (mat) => { mat.colorWrite = showFaces; mat.needsUpdate = true; });
+        });
+        wireMeshes.forEach(({ w, source }) => {
+          let layerOk = true;
+          for (const e of layerEntries) {
+            let p = source; let inside = false;
+            while (p) { if (p === e.node) { inside = true; break; } p = p.parent; }
+            if (inside) { layerOk = e.visible; break; }
+          }
+          w.visible = showWire && layerOk;
+        });
+        Object.entries(viewButtons).forEach(([k, btn]) => {
+          btn.classList.toggle('active', k === mode);
+          btn.setAttribute('aria-pressed', String(k === mode));
+        });
+      }
+      document.getElementById('wireColor').addEventListener('input', (e) => {
+        wireColorHex = e.target.value;
+        wireMeshes.forEach(({ w }) => { if (w.material?.color) w.material.color.set(wireColorHex); });
+      });
+      Object.entries(viewButtons).forEach(([mode, btn]) => {
+        btn.addEventListener('click', () => applyVisualizationMode(mode));
+      });
+
+      function refreshFloorBindings() {
+        if (!loadedModel) return;
+        allStateMeshes = [];
+        const activeRoot = stateEntries.length >= 2 ? stateEntries[activeStateIndex]?.node : null;
+        loadedModel.traverse((child) => {
+          if (!child.isMesh) return;
+          if (activeRoot) {
+            let p = child; let inside = false;
+            while (p) { if (p === activeRoot) { inside = true; break; } p = p.parent; }
+            if (!inside) return;
+          }
+          allStateMeshes.push(child);
+        });
+        rebuildWireMeshes(allStateMeshes);
+        applyVisualizationMode(currentViewMode);
+      }
+
+      function renderStateButtons() {
+        stateButtons.innerHTML = '';
+        stateEntries.forEach((entry, index) => {
+          const btn = document.createElement('button');
+          btn.textContent = entry.uiLabel;
+          btn.classList.toggle('active', index === activeStateIndex);
+          btn.setAttribute('aria-pressed', String(index === activeStateIndex));
+          btn.addEventListener('click', () => {
+            if (activeStateIndex === index) return;
+            activeStateIndex = index;
+            stateEntries.forEach((e, i) => { e.node.visible = i === activeStateIndex; });
+            renderStateButtons();
+            refreshFloorBindings();
+          });
+          stateButtons.appendChild(btn);
+        });
+      }
+
+      function renderLayerButtons() {
+        layerButtons.innerHTML = '';
+        layerEntries.forEach((entry) => {
+          const btn = document.createElement('div');
+          btn.className = 'layerBtn' + (entry.visible ? '' : ' off');
+          btn.setAttribute('role', 'button');
+          btn.setAttribute('tabindex', '0');
+          btn.setAttribute('aria-pressed', String(entry.visible));
+          const colorPick = document.createElement('input');
+          colorPick.type = 'color';
+          colorPick.className = 'layerColorPick';
+          colorPick.title = 'Color de la capa';
+          colorPick.value = entry.color || '#ffffff';
+          colorPick.addEventListener('click', (e) => e.stopPropagation());
+          colorPick.addEventListener('input', (e) => {
+            entry.color = e.target.value;
+            entry.node.traverse((child) => {
+              if (!child.isMesh) return;
+              forEachMeshMaterial(child, (mat) => { if (mat.color) { mat.color.set(e.target.value); mat.needsUpdate = true; } });
+            });
+          });
+          btn.innerHTML = `<span class="layerDot"></span>${entry.uiLabel}`;
+          btn.appendChild(colorPick);
+          const toggleLayer = () => {
+            entry.visible = !entry.visible;
+            entry.node.visible = entry.visible;
+            btn.className = 'layerBtn' + (entry.visible ? '' : ' off');
+            btn.setAttribute('aria-pressed', String(entry.visible));
+            btn.querySelector('.layerDot').style.background = entry.visible ? '#5be7ff' : '#1e3040';
+            applyVisualizationMode(currentViewMode);
+          };
+          btn.addEventListener('click', toggleLayer);
+          btn.addEventListener('keydown', (e) => {
+            if (e.target !== btn) return;
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleLayer(); }
+          });
+          layerButtons.appendChild(btn);
+        });
+      }
+
+      function setupStates(root) {
+        stateEntries = findRootsByRegex(root, STATE_RE, false).map((node) => {
+          const info = parseStateInfo(node.name) || { number: Number.MAX_SAFE_INTEGER, uiLabel: node.name || 'Estado' };
+          return { node, number: info.number, uiLabel: info.uiLabel };
+        });
+        if (stateEntries.length < 2) { statePanel.classList.add('hidden'); return; }
+        activeStateIndex = 0;
+        stateEntries.forEach((e, i) => { e.node.visible = i === activeStateIndex; });
+        renderStateButtons();
+        statePanel.classList.remove('hidden');
+      }
+      function setupLayers(root) {
+        layerEntries = findRootsByRegex(root, LAYER_RE, true).map((node) => ({ node, visible: true, uiLabel: layerLabel(node.name) }));
+        if (!layerEntries.length) { layerPanel.classList.add('hidden'); return; }
+        layerEntries.forEach((e) => { e.node.visible = true; });
+        renderLayerButtons();
+        layerPanel.classList.remove('hidden');
+      }
+
+      // --- Animacion (identico en espiritu al modo Marcador) ---
+      document.getElementById('animPlayPause').addEventListener('click', (e) => {
+        animPaused = !animPaused;
+        e.target.textContent = animPaused ? '▶ Play' : '⏸ Pausa';
+      });
+      animScrub.addEventListener('input', () => {
+        if (!mixer) return;
+        const t = parseFloat(animScrub.value);
+        mixer.setTime(t);
+        animTime.textContent = t.toFixed(1) + 's';
+      });
+
+      // --- Iluminacion ---
+      document.getElementById('lightAmbient').addEventListener('input', (e) => {
+        light.intensity = parseFloat(e.target.value);
+        document.getElementById('lightAmbientVal').textContent = parseFloat(e.target.value).toFixed(2);
+      });
+      document.getElementById('lightDir').addEventListener('input', (e) => {
+        dirLight.intensity = parseFloat(e.target.value);
+        document.getElementById('lightDirVal').textContent = parseFloat(e.target.value).toFixed(2);
+      });
+      document.getElementById('lightAzimuth').addEventListener('input', (e) => {
+        lightAzimuthDeg = parseFloat(e.target.value);
+        document.getElementById('lightAzimuthVal').textContent = lightAzimuthDeg.toFixed(0) + '°';
+        updateLightPosition();
+      });
+      document.getElementById('lightElevation').addEventListener('input', (e) => {
+        lightElevationDeg = parseFloat(e.target.value);
+        document.getElementById('lightElevationVal').textContent = lightElevationDeg.toFixed(0) + '°';
+        updateLightPosition();
+      });
+
+      // --- Escala de exhibicion (multiplicador sobre escala real 1:1) ---
+      const displayScaleSlider = document.getElementById('displayScaleSlider');
+      const displayScaleVal = document.getElementById('displayScaleVal');
+      function applyDisplayScaleMultiplier(k) {
+        if (!loadedModel) return;
+        loadedModel.scale.setScalar(baseModelScale * k);
+      }
+      displayScaleSlider.addEventListener('input', () => {
+        const k = parseFloat(displayScaleSlider.value);
+        displayScaleVal.textContent = k * 100 < 1 ? `${(k * 100).toFixed(2)}%` : `${Math.round(k * 100)}%`;
+        applyDisplayScaleMultiplier(k);
+        if (placementRoot) refreshFloorBindings();
+      });
+
+      applyVisualizationMode('shaded');
+
+      // --- Carga del modelo: en paralelo con la busqueda de superficie, no
+      // se espera a que el usuario toque la pantalla para empezar a bajarlo
+      // (aprovecha el tiempo que tarda en detectar suelo/mesa). ---
+      function attachModelToRoot() {
+        placementRoot.add(loadedModel);
+        setupStates(loadedModel);
+        setupLayers(loadedModel);
+        refreshFloorBindings();
+        updateLightPosition();
+      }
+      logDebug(`Cargando modelo ${pickedModelFile?.name || resolvedModelSrc} (modo suelo)...`);
+      setStatus('model', 'Modelo: cargando 0%...', 'pending');
+      new GLTFLoader().load(
+        resolvedModelSrc,
+        (gltf) => {
+          logDebug(`Modelo ${pickedModelFile?.name || resolvedModelSrc} cargado OK`, 'ok');
+          setStatus('model', 'Modelo: OK ✓', 'ok');
+          loadedModel = gltf.scene;
+          // Sin "_marker_ref" (no hay marcador que calibrar): se asume la
+          // convencion habitual de glTF, 1 unidad = 1 metro real.
+          baseModelScale = 1;
+          loadedModel.scale.setScalar(1);
+          const box = new THREE.Box3().setFromObject(loadedModel);
+          const sphere = box.getBoundingSphere(new THREE.Sphere());
+          modelRadius = Math.max(sphere.radius, 0.1);
+          logDebug(`Modelo (modo suelo): radio aprox. ${modelRadius.toFixed(2)}m — si no coincide con el tamaño real esperado, revisa las unidades de exportacion en Blender.`);
+          if (gltf.animations && gltf.animations.length > 0) {
+            mixer = new THREE.AnimationMixer(loadedModel);
+            gltf.animations.forEach((clip) => {
+              mixer.clipAction(clip).play();
+              if (clip.duration > animDuration) animDuration = clip.duration;
+            });
+            animScrub.max = animDuration.toFixed(2);
+            animScrub.step = (animDuration / 200).toFixed(4);
+            animPanel.classList.remove('hidden');
+            logDebug(`Animaciones detectadas: ${gltf.animations.length} (${gltf.animations.map((c) => c.name || 'sin nombre').join(', ')}), duracion max ${animDuration.toFixed(2)}s`, 'ok');
+          } else {
+            logDebug('Sin animaciones en el GLB (gltf.animations vacio).');
+          }
+          if (placementRoot) attachModelToRoot();
+        },
+        (progress) => {
+          if (progress.lengthComputable) {
+            setStatus('model', `Modelo: cargando ${Math.round((progress.loaded / progress.total) * 100)}%...`, 'pending');
+          }
+        },
+        (err) => {
+          logDebug(`Error cargando modelo 3D: ${err?.message || err}`, 'error');
+          setStatus('model', `Modelo: ERROR - ${err?.message || err}`, 'err');
+        }
+      );
+
+      // --- Bucle WebXR: hit-test + render. Patron estandar de three.js
+      // (ver ejemplo oficial webxr_ar_hittest). ---
+      let hitTestSource = null;
+      let hitTestSourceRequested = false;
+      renderer.setAnimationLoop((timestamp, frame) => {
+        const delta = clock.getDelta();
+        if (mixer && !animPaused) {
+          mixer.update(delta);
+          if (animDuration > 0) {
+            const t = mixer.time % animDuration;
+            animScrub.value = t.toFixed(4);
+            animTime.textContent = t.toFixed(1) + 's';
+          }
+        }
+        if (frame) {
+          const referenceSpace = renderer.xr.getReferenceSpace();
+          if (!hitTestSourceRequested) {
+            hitTestSourceRequested = true;
+            frame.session.requestReferenceSpace('viewer').then((viewerSpace) => {
+              frame.session.requestHitTestSource({ space: viewerSpace }).then((source) => {
+                hitTestSource = source;
+              });
+            }).catch((err) => logDebug(`No se pudo pedir hit-test source: ${err?.message || err}`, 'error'));
+            frame.session.addEventListener('end', () => {
+              hitTestSourceRequested = false;
+              hitTestSource = null;
+              setStatus('cam', 'Cámara: sesión WebXR finalizada', 'pending');
+            });
+          }
+          if (hitTestSource) {
+            const results = frame.getHitTestResults(hitTestSource);
+            if (results.length) {
+              const pose = results[0].getPose(referenceSpace);
+              reticle.visible = true;
+              reticle.matrix.fromArray(pose.transform.matrix);
+              setStatus('marker', 'Superficie: detectada ✓', 'ok');
+            } else {
+              reticle.visible = false;
+              setStatus('marker', 'Superficie: buscando...', 'pending');
+            }
+          }
+        }
         renderer.render(scene, camera);
       });
     });
