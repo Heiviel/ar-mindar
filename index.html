@@ -2199,46 +2199,82 @@
         updateLightPosition();
       }
 
-      const controller = renderer.xr.getController(0);
-      controller.addEventListener('select', () => {
-        // Un pellizco/giro de 2 dedos a veces tambien dispara "select" en
-        // Chrome (cada dedo puede generar su propio input source
-        // transitorio) — ignorarlo mientras haya un gesto en curso evita
-        // que la colocacion salte de sitio a mitad de un pellizco.
-        if (!reticle.visible || gesture) return;
-        placeAt(reticle.matrix.elements);
-        hint.textContent = 'Modelo colocado — toca para reubicarlo, pellizca para escalar, gira con dos dedos';
-      });
-      scene.add(controller);
-
-      // --- Gestos tactiles: pellizcar para escalar, girar con dos dedos.
-      // Van por eventos touch normales (siguen llegando durante la sesion
-      // XR gracias al dom-overlay), independientes del "select" de arriba
-      // que solo coloca/reubica con un toque de un dedo. ---
-      let gesture = null;
+      // --- Interaccion tactil: se gestiona TODO a mano con eventos touch
+      // normales (siguen llegando durante la sesion XR gracias al
+      // dom-overlay), en vez de usar el "select" de WebXR. Motivo: select
+      // no distingue tap de arrastre, y con gestos de 2 dedos a veces
+      // dispara una vez por cada dedo en Chrome (colocaba el modelo a
+      // mitad de un pellizco) — controlarlo todo aqui evita esa ambiguedad.
+      //
+      // - Toque corto de 1 dedo sobre el aro: coloca/salta a esa superficie
+      //   (para la primera colocacion, o para moverlo a otra altura/lugar
+      //   lejano — mesa <-> suelo).
+      // - Arrastre de 1 dedo (una vez colocado): desliza el modelo por el
+      //   plano horizontal que pasa por su posicion actual — mas preciso
+      //   para ajustes finos cercanos, sin depender de que el aro este
+      //   reconociendo superficie justo ahi.
+      // - Pellizco de 2 dedos: escala. Giro de 2 dedos: rota en Y.
+      let gesture = null;      // { startDist, startAngle, startScale, startRotY }
+      let singleTouch = null;  // { id, startX, startY, dragging }
+      const DRAG_THRESHOLD_PX = 12;
+      const dragRaycaster = new THREE.Raycaster();
+      const dragPlane = new THREE.Plane();
+      const dragPoint = new THREE.Vector3();
       function twoTouchState(touches) {
         const dx = touches[1].clientX - touches[0].clientX;
         const dy = touches[1].clientY - touches[0].clientY;
         return { dist: Math.hypot(dx, dy), angle: Math.atan2(dy, dx) };
       }
+      function ndcFromTouch(t) {
+        return new THREE.Vector2((t.clientX / window.innerWidth) * 2 - 1, -(t.clientY / window.innerHeight) * 2 + 1);
+      }
       renderer.domElement.addEventListener('touchstart', (e) => {
         if (e.touches.length === 2 && placementRoot) {
+          singleTouch = null;
           const s = twoTouchState(e.touches);
           gesture = { startDist: s.dist, startAngle: s.angle, startScale: placementRoot.scale.x, startRotY: placementRoot.rotation.y };
+        } else if (e.touches.length === 1 && !gesture) {
+          const t = e.touches[0];
+          singleTouch = { id: t.identifier, startX: t.clientX, startY: t.clientY, dragging: false };
         }
       }, { passive: true });
       renderer.domElement.addEventListener('touchmove', (e) => {
-        if (!gesture || e.touches.length !== 2 || !placementRoot) return;
-        e.preventDefault(); // evita que el navegador haga su propio pinch-zoom de pagina
-        const s = twoTouchState(e.touches);
-        const newScale = THREE.MathUtils.clamp(gesture.startScale * (s.dist / gesture.startDist), 0.05, 20);
-        placementRoot.scale.setScalar(newScale);
-        placementRoot.rotation.y = gesture.startRotY + (s.angle - gesture.startAngle);
+        if (gesture && e.touches.length === 2 && placementRoot) {
+          e.preventDefault(); // evita que el navegador haga su propio pinch-zoom de pagina
+          const s = twoTouchState(e.touches);
+          const newScale = THREE.MathUtils.clamp(gesture.startScale * (s.dist / gesture.startDist), 0.05, 20);
+          placementRoot.scale.setScalar(newScale);
+          placementRoot.rotation.y = gesture.startRotY + (s.angle - gesture.startAngle);
+          return;
+        }
+        if (singleTouch && e.touches.length === 1 && placementRoot) {
+          const t = Array.from(e.touches).find((tt) => tt.identifier === singleTouch.id);
+          if (!t) return;
+          const dx = t.clientX - singleTouch.startX;
+          const dy = t.clientY - singleTouch.startY;
+          if (!singleTouch.dragging && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return; // aun no es arrastre, podria ser solo un tap
+          singleTouch.dragging = true;
+          e.preventDefault();
+          dragPlane.setFromNormalAndCoplanarPoint(worldUp, placementRoot.position);
+          dragRaycaster.setFromCamera(ndcFromTouch(t), camera);
+          if (dragRaycaster.ray.intersectPlane(dragPlane, dragPoint)) {
+            placementRoot.position.x = dragPoint.x;
+            placementRoot.position.z = dragPoint.z;
+            updateLightPosition();
+          }
+        }
       }, { passive: false });
       renderer.domElement.addEventListener('touchend', (e) => {
         if (e.touches.length < 2) gesture = null;
+        if (singleTouch && !Array.from(e.touches).some((t) => t.identifier === singleTouch.id)) {
+          if (!singleTouch.dragging && reticle.visible) {
+            placeAt(reticle.matrix.elements);
+            hint.textContent = 'Modelo colocado — arrastra con el dedo para moverlo, pellizca para escalar, gira con dos dedos';
+          }
+          singleTouch = null;
+        }
       }, { passive: true });
-      renderer.domElement.addEventListener('touchcancel', () => { gesture = null; }, { passive: true });
+      renderer.domElement.addEventListener('touchcancel', () => { gesture = null; singleTouch = null; }, { passive: true });
 
       // --- Helpers puros duplicados del modo Marcador (ver nota arriba) ---
       function forEachMeshMaterial(mesh, cb) {
@@ -2536,7 +2572,11 @@
 
       // --- Carga del modelo: en paralelo con la busqueda de superficie, no
       // se espera a que el usuario toque la pantalla para empezar a bajarlo
-      // (aprovecha el tiempo que tarda en detectar suelo/mesa). ---
+      // (aprovecha el tiempo que tarda en detectar suelo/mesa). Tambien se
+      // reutiliza para cambiar de modelo SIN salir del modo Suelo (ver
+      // listener de modelFileInput mas abajo): la colocacion (posicion/
+      // rotacion/escala de placementRoot) se conserva, solo cambia lo que
+      // cuelga dentro. ---
       function attachModelToRoot() {
         placementRoot.add(loadedModel);
         setupStates(loadedModel);
@@ -2544,12 +2584,46 @@
         refreshFloorBindings();
         updateLightPosition();
       }
-      logDebug(`Cargando modelo ${pickedModelFile?.name || resolvedModelSrc} (modo suelo)...`);
-      setStatus('model', 'Modelo: cargando 0%...', 'pending');
-      new GLTFLoader().load(
-        resolvedModelSrc,
+      function disposeModelTree(root) {
+        root.traverse((child) => {
+          if (!child.isMesh) return;
+          child.geometry?.dispose();
+          forEachMeshMaterial(child, (mat) => {
+            Object.values(mat).forEach((v) => { if (v?.isTexture) v.dispose(); });
+            mat.dispose();
+          });
+        });
+      }
+      function resetModelState() {
+        if (mixer) mixer.stopAllAction();
+        mixer = null;
+        animDuration = 0;
+        animPaused = false;
+        document.getElementById('animPlayPause').textContent = '⏸ Pausa';
+        animPanel.classList.add('hidden');
+        statePanel.classList.add('hidden');
+        layerPanel.classList.add('hidden');
+        stateEntries = [];
+        layerEntries = [];
+        activeStateIndex = 0;
+        allStateMeshes = [];
+        if (wireGroup && wireGroup.parent) wireGroup.parent.remove(wireGroup);
+        wireGroup = null;
+        wireMeshes = [];
+        if (loadedModel) {
+          if (loadedModel.parent) loadedModel.parent.remove(loadedModel);
+          disposeModelTree(loadedModel);
+        }
+        loadedModel = null;
+      }
+      function loadFloorModel(src, label) {
+        resetModelState();
+        logDebug(`Cargando modelo ${label} (modo suelo)...`);
+        setStatus('model', 'Modelo: cargando 0%...', 'pending');
+        new GLTFLoader().load(
+        src,
         (gltf) => {
-          logDebug(`Modelo ${pickedModelFile?.name || resolvedModelSrc} cargado OK`, 'ok');
+          logDebug(`Modelo ${label} cargado OK`, 'ok');
           setStatus('model', 'Modelo: OK ✓', 'ok');
           loadedModel = gltf.scene;
           // Sin "_marker_ref" (no hay marcador que calibrar): se asume la
@@ -2578,7 +2652,12 @@
           const zUpFixRow = document.getElementById('zUpFixRow');
           const zUpFixChk = document.getElementById('zUpFixChk');
           zUpFixRow.hidden = false;
-          zUpFixChk.checked = false;
+          // Marcado por defecto: el flujo de exportacion habitual de este
+          // proyecto deja los GLB en Z-up (Blender nativo, sin conversion a
+          // Y-up), asi que lo normal es necesitar la correccion. Se puede
+          // desmarcar si algun modelo puntual ya viene en Y-up.
+          zUpFixChk.checked = true;
+          loadedModel.rotation.x = -Math.PI / 2;
           zUpFixChk.onchange = () => {
             loadedModel.rotation.x = zUpFixChk.checked ? -Math.PI / 2 : 0;
             loadedModel.updateMatrixWorld(true);
@@ -2608,7 +2687,21 @@
           logDebug(`Error cargando modelo 3D: ${err?.message || err}`, 'error');
           setStatus('model', `Modelo: ERROR - ${err?.message || err}`, 'err');
         }
-      );
+        );
+      }
+      loadFloorModel(resolvedModelSrc, pickedModelFile?.name || resolvedModelSrc);
+
+      // Cambiar de modelo SIN salir del modo Suelo: reutiliza el mismo
+      // selector de archivo del panel "Modelo y marcador" (el listener de
+      // arriba, registrado al cargar la pagina, ya deja actualizados
+      // resolvedModelSrc/pickedModelFile antes de que este se ejecute). La
+      // colocacion actual (posicion/rotacion/escala) NO se pierde.
+      document.getElementById('modelFileInput').addEventListener('change', () => {
+        loadFloorModel(resolvedModelSrc, pickedModelFile?.name || resolvedModelSrc);
+      });
+      // El selector de marcador (.mind) no aplica a este modo — no hay
+      // marcador impreso que reconocer.
+      document.getElementById('targetFileInput').closest('.row').hidden = true;
 
       // --- Bucle WebXR: hit-test + render. Patron estandar de three.js
       // (ver ejemplo oficial webxr_ar_hittest). ---
