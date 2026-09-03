@@ -357,7 +357,7 @@
       <h4 class="groupTitle"><button type="button" class="groupToggleBtn" aria-expanded="false" aria-controls="animPanelBody">Animación</button></h4>
       <div class="groupBody" id="animPanelBody">
         <div class="row">
-          <button id="animPlayPause">⏸ Pausa</button>
+          <button id="animPlayPause">▶ Play</button>
         </div>
         <div class="row">
           <label for="animScrub" style="white-space:nowrap">Tiempo</label>
@@ -2013,6 +2013,10 @@
             });
             animScrub.max = animDuration.toFixed(2);
             animScrub.step = (animDuration / 200).toFixed(4);
+            // Pausada por defecto: se deja en el primer frame en vez de
+            // arrancar sola, el usuario le da a Play cuando quiera verla.
+            animPaused = true;
+            animPlayPause.textContent = '▶ Play';
             animPanel.classList.remove('hidden');
             logDebug(`Animaciones detectadas: ${gltf.animations.length} (${gltf.animations.map(c => c.name || 'sin nombre').join(', ')}), duracion max ${animDuration.toFixed(2)}s`, 'ok');
           } else {
@@ -2825,6 +2829,10 @@
             });
             animScrub.max = animDuration.toFixed(2);
             animScrub.step = (animDuration / 200).toFixed(4);
+            // Pausada por defecto: se deja en el primer frame en vez de
+            // arrancar sola, el usuario le da a Play cuando quiera verla.
+            animPaused = true;
+            document.getElementById('animPlayPause').textContent = '▶ Play';
             animPanel.classList.remove('hidden');
             logDebug(`Animaciones detectadas: ${gltf.animations.length} (${gltf.animations.map((c) => c.name || 'sin nombre').join(', ')}), duracion max ${animDuration.toFixed(2)}s`, 'ok');
           } else {
