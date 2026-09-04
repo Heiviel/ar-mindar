@@ -1960,13 +1960,18 @@
         stabilityVal.textContent = v;
         // Mapear 1-10 a filterBeta 2-200 (mas alto = mas suave pero mas lento)
         const newBeta = Math.round(2 * Math.pow(10, (v - 1) / 3));
-        if (mindarThree.controller) {
-          const anchors = mindarThree.controller.trackingBackend?.anchors ||
-                          mindarThree.controller.anchors || [];
-          anchors.forEach((a) => {
-            if (a.filter) a.filter.parameters = { ...a.filter.parameters, beta: newBeta };
-          });
-        }
+        // Ruta real confirmada leyendo el bundle fuente de mind-ar@1.2.5
+        // (controller-mGt1s8dJ.js + ui-fBadYuor.js): el filtro de
+        // suavizado vive en controller.trackingStates[i].filter, con
+        // "beta" como propiedad DIRECTA de esa instancia (no dentro de
+        // ningun ".parameters"). La ruta anterior (controller.anchors /
+        // controller.trackingBackend.anchors / filter.parameters.beta) no
+        // existe en esta version - el slider llevaba desde siempre sin
+        // hacer nada, fallando en silencio (array vacio, sin error).
+        const trackingStates = mindarThree.controller?.trackingStates || [];
+        trackingStates.forEach((ts) => {
+          if (ts.filter) ts.filter.beta = newBeta;
+        });
       });
 
       // Multiplicador de exhibicion sobre la escala/posicion "real" que dejo
