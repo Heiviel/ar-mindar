@@ -421,7 +421,7 @@
         <div class="row">
           <label><input type="checkbox" id="handPreviewChk" checked /> Ver vista previa (para calibrar)</label>
         </div>
-        <p class="hint" id="handStatusMsg">Requiere una cámara distinta a la del marcador (ej. la frontal del portátil si el marcador lo ves con una webcam externa). Gestos: <b>palma abierta</b> inclinada a un lado = girar; <b>índice+corazón extendidos</b> (resto cerrados) = mover; <b>pellizco</b> pulgar+índice = zoom (abrir agranda, cerrar empequeñece). Experimental: puede ir lento en portátiles modestos.</p>
+        <p class="hint" id="handStatusMsg">Requiere una cámara distinta a la del marcador (ej. la frontal del portátil si el marcador lo ves con una webcam externa). Gestos: <b>palma abierta</b> inclinada a un lado = girar; <b>índice+corazón extendidos</b> (resto cerrados) = mover; <b>solo índice extendido</b> (corazón/anular/meñique cerrados) + pellizca con el pulgar = zoom, abrir agranda y cerrar empequeñece. Experimental: puede ir lento en portátiles modestos.</p>
       </div>
     </section>
 
@@ -2108,11 +2108,6 @@
       let activeGesture = null;
       const ROTATE_GAIN = 2.5;
       const PAN_GAIN = 4;
-      // Distancia de pinza (normalizada 0-1) con histeresis para decidir
-      // cuando ENTRAR en el gesto de zoom (no hace falta para salir: basta
-      // con que la mano deje de estar en pose de pinza para que el
-      // clasificador pase a 'pan'/'rotate'/null).
-      const PINCH_ENTER = 0.06;
 
       function landmarkDist(a, b) {
         const dx = a.x - b.x, dy = a.y - b.y;
@@ -2132,15 +2127,21 @@
         const midMcp = lm[9];
         return Math.atan2(midMcp.x - wrist.x, wrist.y - midMcp.y);
       }
+      // La clasificacion mira SOLO que dedos estan doblados/estirados, NUNCA
+      // la distancia pulgar-indice: si el zoom dependiera de que esa
+      // distancia se mantuviera corta, abrir el pellizco para agrandar la
+      // pieza haria que el gesto se "soltara" a mitad de camino (justo lo
+      // contrario de lo que se quiere medir). La distancia pulgar-indice se
+      // usa solo DESPUES, como valor continuo de zoom, no como filtro de
+      // que gesto es.
       function classifyGesture(lm) {
-        const pinchDist = landmarkDist(lm[4], lm[8]);
-        if (pinchDist < PINCH_ENTER) return 'zoom';
         const indexExt = isFingerExtended(lm, 8, 6);
         const middleExt = isFingerExtended(lm, 12, 10);
         const ringExt = isFingerExtended(lm, 16, 14);
         const pinkyExt = isFingerExtended(lm, 20, 18);
-        if (indexExt && middleExt && !ringExt && !pinkyExt) return 'pan';
         if (indexExt && middleExt && ringExt && pinkyExt) return 'rotate';
+        if (indexExt && middleExt && !ringExt && !pinkyExt) return 'pan';
+        if (indexExt && !middleExt && !ringExt && !pinkyExt) return 'zoom';
         return null;
       }
 
