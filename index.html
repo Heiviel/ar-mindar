@@ -429,13 +429,12 @@
         </div>
         <p class="hint" id="handStatusMsg">Requiere una cámara distinta a la del marcador (ej. la frontal del portátil si el marcador lo ves con una webcam externa). Gestos:</p>
         <ul class="hint" style="margin:4px 0 8px; padding-left:18px;">
-          <li><b>Palma abierta</b> (4 dedos) inclinada a un lado = girar.</li>
+          <li><b>Palma abierta</b> (4 dedos): inclínala a un lado para girar, acércala/aléjala de la cámara para zoom. Las dos a la vez.</li>
           <li><b>Índice+corazón</b> extendidos (resto cerrados) = mover.</li>
-          <li><b>Solo índice</b> extendido + pellizca con el pulgar = zoom (abrir agranda, cerrar empequeñece).</li>
-          <li><b>Shaka</b> (pulgar+meñique estirados, resto cerrado) y mueve la mano a un lado = Sección (se activa sola si estaba apagada).</li>
-          <li><b>Puño cerrado</b> y barre a un lado = cambia de Estado (si hay 2 o más).</li>
+          <li><b>Shaka</b> (pulgar+meñique estirados, resto cerrado): mueve la mano a un lado = Sección (se activa sola si estaba apagada); gira la muñeca = cambia el eje Planta/Alzado/Perfil, ida y vuelta.</li>
+          <li><b>Puño cerrado</b> (o cualquier otra postura) = sin gesto: suelta el control activo para mover la mano libremente o frenar un zoom/sección a medias.</li>
         </ul>
-        <p class="hint">Experimental: puede ir lento en portátiles modestos. Las 5 poses son distintas entre sí para no confundirse, pero si algo se activa sin querer dímelo y se ajusta.</p>
+        <p class="hint">Experimental: puede ir lento en portátiles modestos. Si algo se activa sin querer o el sentido sale invertido, dímelo y se ajusta.</p>
       </div>
     </section>
 
@@ -2107,14 +2106,23 @@
 
       // Control por manos (beta): segunda camara independiente (normalmente
       // la frontal del portatil, distinta de la que usa MindAR para ver el
-      // marcador) + MediaPipe Hands corriendo en el navegador. Tres gestos,
+      // marcador) + MediaPipe Hands corriendo en el navegador. Gestos,
       // cada uno reconocido por la forma de la mano (ver classifyGesture):
-      //   - Palma abierta (4 dedos, sin contar pulgar, extendidos): GIRAR.
-      //     Se inclina la palma a un lado u otro, como un volante.
+      //   - Palma abierta (4 dedos, sin contar pulgar, extendidos): GIRAR
+      //     Y ZOOM a la vez, dos señales independientes de la misma pose:
+      //     inclinar la palma a un lado gira (como un volante); acercar o
+      //     alejar la mano de la camara hace zoom (usando el ancho de la
+      //     palma, indice_mcp-meñique_mcp, como aproximacion de distancia:
+      //     mano grande en la imagen = cerca = zoom mas grande).
       //   - Indice+corazon extendidos, resto cerrados: MOVER la pieza.
-      //   - Pellizco pulgar+indice: ZOOM. Abrir el pellizco agranda, cerrar
-      //     empequeñece (igual logica que el pinch-to-zoom tactil del modo
-      //     Suelo: ratio de distancia actual/inicial por escala inicial).
+      //   - "Shaka" (pulgar+meñique estirados, resto cerrado): controla la
+      //     Seccion. Mover la mano a un lado cambia el % de corte; GIRAR
+      //     la muñeca (con la mano en shaka) cicla el eje Planta/Alzado/
+      //     Perfil, hacia un lado y hacia el otro.
+      //   - Cualquier otra pose (puño cerrado incluido) NO activa nada:
+      //     sirve para "soltar" el gesto activo a proposito - mover la
+      //     mano sin que afecte al modelo, o cortar en seco un zoom/
+      //     seccion a medias.
       // Pensado para cuando ya se usa una webcam externa para el marcador y
       // la camara del portatil queda libre. Todo dentro de un try/catch
       // amplio porque depende de hardware/permisos que aqui no se pueden
@@ -2135,7 +2143,7 @@
       let handsModel = null;
       let handRafId = null;
       let handLoopRunning = false;
-      // Gesto activo (null | 'rotate' | 'pan' | 'zoom'), con los valores de
+      // Gesto activo (null | 'palm' | 'pan' | 'section'), con los valores de
       // referencia tomados al RECONOCER el gesto (no en cada frame): igual
       // patron que el gesto de pinza/giro del modo Suelo (ver "gesture" mas
       // abajo, startDist/startAngle/startScale/startRotY) - se compara
@@ -2145,12 +2153,11 @@
       const ROTATE_GAIN = 2.5;
       const PAN_GAIN = 4;
       const SECTION_GAIN = 220;
-      // Distancia horizontal normalizada (0-1) que un puño debe recorrer
-      // para disparar un cambio de Estado. Es un gesto de "swipe" (evento
-      // unico), no un arrastre continuo: por eso no hay ganancia, solo un
-      // umbral y un "ya disparado" (fired) para no repetir el cambio
-      // mientras la mano sigue moviendose en el mismo barrido.
-      const SWIPE_THRESHOLD = 0.16;
+      // Angulo (rad) de giro de muñeca en shaka por cada paso de eje
+      // Planta->Alzado->Perfil. ~45 grados: ni tan poco que se dispare sin
+      // querer, ni tan mucho que incomode la muñeca.
+      const SECTION_AXIS_STEP = Math.PI / 4;
+      const AXIS_ORDER = ['z', 'x', 'y']; // Planta, Alzado, Perfil (mismo orden que axisButtons)
 
       function landmarkDist(a, b) {
         const dx = a.x - b.x, dy = a.y - b.y;
@@ -2170,28 +2177,34 @@
         const midMcp = lm[9];
         return Math.atan2(midMcp.x - wrist.x, wrist.y - midMcp.y);
       }
-      // La clasificacion mira SOLO que dedos estan doblados/estirados, NUNCA
-      // la distancia pulgar-indice: si el zoom dependiera de que esa
-      // distancia se mantuviera corta, abrir el pellizco para agrandar la
-      // pieza haria que el gesto se "soltara" a mitad de camino (justo lo
-      // contrario de lo que se quiere medir). La distancia pulgar-indice se
-      // usa solo DESPUES, como valor continuo de zoom, no como filtro de
-      // que gesto es.
+      // Igual idea que palmRollAngle pero para la pose "shaka": el eje que
+      // gira es pulgar-meñique en vez de muñeca-corazon (son los dos dedos
+      // extendidos en esta pose). 0 = pulgar arriba/meñique abajo.
+      function shakaRollAngle(lm) {
+        const thumbTip = lm[4];
+        const pinkyTip = lm[20];
+        return Math.atan2(thumbTip.x - pinkyTip.x, pinkyTip.y - thumbTip.y);
+      }
+      // Ancho de la palma (indice_mcp - meñique_mcp): apenas varia con que
+      // dedos esten doblados (son nudillos base, no puntas), asi que sirve
+      // de aproximacion estable de "cuanto ocupa la mano en la imagen" ->
+      // cuanto de cerca esta de la camara. Usado por el zoom de la pose
+      // "palma abierta" (acercar/alejar la mano).
+      function palmWidth(lm) {
+        return landmarkDist(lm[5], lm[17]);
+      }
       function classifyGesture(lm) {
         const thumbExt = isFingerExtended(lm, 4, 2);
         const indexExt = isFingerExtended(lm, 8, 6);
         const middleExt = isFingerExtended(lm, 12, 10);
         const ringExt = isFingerExtended(lm, 16, 14);
         const pinkyExt = isFingerExtended(lm, 20, 18);
-        if (indexExt && middleExt && ringExt && pinkyExt) return 'rotate';
+        if (indexExt && middleExt && ringExt && pinkyExt) return 'palm'; // girar + zoom
         if (indexExt && middleExt && !ringExt && !pinkyExt) return 'pan';
-        if (indexExt && !middleExt && !ringExt && !pinkyExt) return 'zoom';
-        // "Shaka" (pulgar+meñique estirados, resto cerrado): controla la
-        // Seccion. Pose deliberadamente distinta a las de arriba (todas
-        // necesitan el indice estirado) para que no se confunda con ellas.
+        // "Shaka" (pulgar+meñique estirados, resto cerrado): Seccion.
         if (thumbExt && pinkyExt && !indexExt && !middleExt && !ringExt) return 'section';
-        // Puño cerrado (nada estirado): barrido para cambiar de Estado.
-        if (!indexExt && !middleExt && !ringExt && !pinkyExt) return 'state-swipe';
+        // Cualquier otra pose (puño cerrado incluido) no se reconoce: deja
+        // "sin gesto", que es justo lo que cancela/pausa el control activo.
         return null;
       }
 
@@ -2211,11 +2224,9 @@
       }
 
       const GESTURE_LABELS = {
-        rotate: 'Girando (palma abierta)...',
+        palm: 'Girando/Zoom (palma abierta)...',
         pan: 'Moviendo (índice+corazón)...',
-        zoom: 'Escalando (pellizco)...',
         section: 'Ajustando Sección (shaka)...',
-        'state-swipe': 'Puño: barre a un lado para cambiar de Estado.',
       };
 
       function onHandResults(results) {
@@ -2238,7 +2249,7 @@
         }
 
         if (!lm) {
-          if (activeGesture?.type === 'zoom') refreshModelBindings(true);
+          if (activeGesture?.type === 'palm') refreshModelBindings(true);
           activeGesture = null;
           handStatusMsg.textContent = 'Mano no detectada.';
           return;
@@ -2247,27 +2258,49 @@
         const type = classifyGesture(lm);
 
         if (type !== activeGesture?.type) {
-          // Al SALIR de un gesto de zoom hay que recalcular sombra/seccion
-          // igual que hace el slider "Escala" en su evento 'change' (caro,
-          // no se hace en cada frame de arrastre).
-          if (activeGesture?.type === 'zoom') refreshModelBindings(true);
-          activeGesture = type === 'rotate'
-            ? { type, startAngle: palmRollAngle(lm), startRotZ: userRotZ }
+          // Al SALIR de un gesto de zoom (ahora parte de 'palm') hay que
+          // recalcular sombra/seccion igual que hace el slider "Escala" en
+          // su evento 'change' (caro, no se hace en cada frame).
+          if (activeGesture?.type === 'palm') refreshModelBindings(true);
+          activeGesture = type === 'palm'
+            ? {
+                type,
+                startAngle: palmRollAngle(lm),
+                startRotZ: userRotZ,
+                startWidth: palmWidth(lm),
+                startK: parseFloat(displayScaleSlider.value),
+              }
             : type === 'pan'
             ? { type, startX: (lm[8].x + lm[12].x) / 2, startY: (lm[8].y + lm[12].y) / 2, startOffset: userOffset.clone() }
-            : type === 'zoom'
-            ? { type, startDist: landmarkDist(lm[4], lm[8]), startK: parseFloat(displayScaleSlider.value) }
             : type === 'section'
-            ? { type, startX: lm[0].x, startSlider: parseFloat(clipSlider.value) }
-            : type === 'state-swipe'
-            ? { type, startX: lm[0].x, fired: false }
+            ? {
+                type,
+                startX: lm[0].x,
+                startSlider: parseFloat(clipSlider.value),
+                startAngle: shakaRollAngle(lm),
+                startAxisIdx: Math.max(0, AXIS_ORDER.indexOf(clipAxis)),
+                lastAxisStep: 0,
+              }
             : null;
         }
 
-        if (activeGesture?.type === 'rotate' && loadedModel) {
+        if (activeGesture?.type === 'palm' && loadedModel) {
           const angle = palmRollAngle(lm);
           userRotZ = activeGesture.startRotZ + (angle - activeGesture.startAngle) * ROTATE_GAIN;
           loadedModel.rotation.z = userRotZ;
+
+          // Zoom acercando/alejando la mano de la camara: ratio del ancho
+          // de palma actual/inicial por la escala inicial, misma logica de
+          // "ratio desde el inicio del gesto" que ya usaba el pellizco.
+          const width = palmWidth(lm);
+          const k = THREE.MathUtils.clamp(
+            activeGesture.startK * (width / activeGesture.startWidth),
+            parseFloat(displayScaleSlider.min),
+            parseFloat(displayScaleSlider.max),
+          );
+          displayScaleSlider.value = k;
+          displayScaleVal.textContent = k * 100 < 1 ? `${(k * 100).toFixed(2)}%` : `${Math.round(k * 100)}%`;
+          applyDisplayScaleMultiplier(k);
         } else if (activeGesture?.type === 'pan' && loadedModel) {
           const x = (lm[8].x + lm[12].x) / 2;
           const y = (lm[8].y + lm[12].y) / 2;
@@ -2280,16 +2313,6 @@
             activeGesture.startOffset.z - (y - activeGesture.startY) * PAN_GAIN,
           );
           applyDisplayScaleMultiplier(parseFloat(displayScaleSlider.value));
-        } else if (activeGesture?.type === 'zoom' && loadedModel) {
-          const dist = landmarkDist(lm[4], lm[8]);
-          const k = THREE.MathUtils.clamp(
-            activeGesture.startK * (dist / activeGesture.startDist),
-            parseFloat(displayScaleSlider.min),
-            parseFloat(displayScaleSlider.max),
-          );
-          displayScaleSlider.value = k;
-          displayScaleVal.textContent = k * 100 < 1 ? `${(k * 100).toFixed(2)}%` : `${Math.round(k * 100)}%`;
-          applyDisplayScaleMultiplier(k);
         } else if (activeGesture?.type === 'section') {
           // Activar Seccion sola si el usuario hace el gesto dedicado: sin
           // esto el gesto no tendria ningun efecto visible la primera vez.
@@ -2300,20 +2323,34 @@
           const dx = lm[0].x - activeGesture.startX;
           clipSlider.value = THREE.MathUtils.clamp(activeGesture.startSlider - dx * SECTION_GAIN, 0, 100);
           applyClipState();
-        } else if (activeGesture?.type === 'state-swipe' && !activeGesture.fired && stateEntries.length >= 2) {
-          const dx = lm[0].x - activeGesture.startX;
-          if (Math.abs(dx) > SWIPE_THRESHOLD) {
-            // Espejo horizontal, igual criterio que el resto de gestos:
-            // barrer a la derecha (en la vista, espejada) = siguiente Estado.
-            const dir = dx < 0 ? 1 : -1;
-            setActiveState((activeStateIndex + dir + stateEntries.length) % stateEntries.length);
-            activeGesture.fired = true;
+
+          // Girar la muñeca en shaka cicla el eje Planta/Alzado/Perfil: se
+          // mide el angulo acumulado desde el inicio del gesto y se divide
+          // en "escalones" de SECTION_AXIS_STEP radianes (patron de dial,
+          // no de evento unico - "lastAxisStep" evita reaplicar el mismo
+          // escalon en cada frame, pero SI permite volver atras si la
+          // muñeca gira en el otro sentido, porque compara contra el
+          // escalon actual, no contra un umbral de una sola vez).
+          let dAngle = shakaRollAngle(lm) - activeGesture.startAngle;
+          while (dAngle > Math.PI) dAngle -= 2 * Math.PI;
+          while (dAngle < -Math.PI) dAngle += 2 * Math.PI;
+          const step = Math.round(dAngle / SECTION_AXIS_STEP);
+          if (step !== activeGesture.lastAxisStep) {
+            activeGesture.lastAxisStep = step;
+            const idx = ((activeGesture.startAxisIdx + step) % 3 + 3) % 3;
+            const newAxis = AXIS_ORDER[idx];
+            if (newAxis !== clipAxis) {
+              clipAxis = newAxis;
+              setActiveAxisButton();
+              updateSliderRange(true);
+              applyClipState();
+            }
           }
         }
 
         handStatusMsg.textContent = activeGesture
           ? GESTURE_LABELS[activeGesture.type]
-          : 'Mano detectada. Palma=girar, índice+corazón=mover, pellizco=zoom, shaka=sección, puño+barrido=estado.';
+          : 'Mano detectada. Palma=girar+zoom, índice+corazón=mover, shaka=sección (gira muñeca=cambia eje).';
       }
 
       async function handLoop() {
@@ -2360,7 +2397,7 @@
           }
           handLoopRunning = true;
           handLoop();
-          handStatusMsg.textContent = 'Activo. Palma abierta = girar, índice+corazón = mover, pellizco = zoom.';
+          handStatusMsg.textContent = 'Activo. Palma=girar+zoom, índice+corazón=mover, shaka=sección.';
         } catch (err) {
           console.error('No se pudo iniciar la cámara de mano:', err);
           handStatusMsg.textContent = `Error al abrir la cámara: ${err.message}`;
