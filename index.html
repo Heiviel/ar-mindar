@@ -421,7 +421,7 @@
         <div class="row">
           <label><input type="checkbox" id="handPreviewChk" checked /> Ver vista previa (para calibrar)</label>
         </div>
-        <p class="hint" id="handStatusMsg">Requiere una cámara distinta a la del marcador (ej. la frontal del portátil si el marcador lo ves con una webcam externa). Cierra pulgar+índice (pinza) y mueve la mano para girar la pieza, como al arrastrar con el ratón. Experimental: puede ir lento en portátiles modestos.</p>
+        <p class="hint" id="handStatusMsg">Requiere una cámara distinta a la del marcador (ej. la frontal del portátil si el marcador lo ves con una webcam externa). Gestos: <b>palma abierta</b> inclinada a un lado = girar; <b>índice+corazón extendidos</b> (resto cerrados) = mover; <b>pellizco</b> pulgar+índice = zoom (abrir agranda, cerrar empequeñece). Experimental: puede ir lento en portátiles modestos.</p>
       </div>
     </section>
 
@@ -1245,6 +1245,11 @@
       // escala por el mismo factor mantiene ese punto fijo sea cual sea.
       let baseModelScale = 1;
       const baseModelPosition = new THREE.Vector3();
+      // Desplazamiento adicional del gesto de mano "mover" (indice+corazon
+      // extendidos). Se suma DESPUES de aplicar baseModelPosition*k, no la
+      // sustituye - asi el calibrado automatico contra "_marker_ref" sigue
+      // siendo el punto de partida y esto es solo un offset manual encima.
+      const userOffset = new THREE.Vector3();
       // Escala mundo del anchor de MindAR. NO es 1: MindAR compone el
       // anchor con una postMatrix cuya escala es markerWidth EN PIXELES de
       // la imagen target (suele ser de cientos). Es decir, 1 unidad local
@@ -2016,7 +2021,7 @@
       function applyDisplayScaleMultiplier(k) {
         if (!loadedModel) return;
         loadedModel.scale.setScalar(baseModelScale * k);
-        loadedModel.position.copy(baseModelPosition).multiplyScalar(k);
+        loadedModel.position.copy(baseModelPosition).multiplyScalar(k).add(userOffset);
         loadedModel.updateMatrix();
       }
       displayScaleSlider.addEventListener('input', () => {
@@ -2066,12 +2071,18 @@
 
       // Control por manos (beta): segunda camara independiente (normalmente
       // la frontal del portatil, distinta de la que usa MindAR para ver el
-      // marcador) + MediaPipe Hands corriendo en el navegador. Gesto: pinza
-      // (pulgar+indice juntos) y mover la mano = igual que arrastrar con el
-      // raton, reutiliza "userRotZ". Pensado para cuando ya se usa una
-      // webcam externa para el marcador y la camara del portatil queda
-      // libre. Todo dentro de un try/catch amplio porque depende de
-      // hardware/permisos del usuario que aqui no se pueden probar.
+      // marcador) + MediaPipe Hands corriendo en el navegador. Tres gestos,
+      // cada uno reconocido por la forma de la mano (ver classifyGesture):
+      //   - Palma abierta (4 dedos, sin contar pulgar, extendidos): GIRAR.
+      //     Se inclina la palma a un lado u otro, como un volante.
+      //   - Indice+corazon extendidos, resto cerrados: MOVER la pieza.
+      //   - Pellizco pulgar+indice: ZOOM. Abrir el pellizco agranda, cerrar
+      //     empequeñece (igual logica que el pinch-to-zoom tactil del modo
+      //     Suelo: ratio de distancia actual/inicial por escala inicial).
+      // Pensado para cuando ya se usa una webcam externa para el marcador y
+      // la camara del portatil queda libre. Todo dentro de un try/catch
+      // amplio porque depende de hardware/permisos que aqui no se pueden
+      // probar.
       const handTrackingChk = document.getElementById('handTrackingChk');
       const handCamRow = document.getElementById('handCamRow');
       const handCamSelect = document.getElementById('handCamSelect');
@@ -2088,13 +2099,50 @@
       let handsModel = null;
       let handRafId = null;
       let handLoopRunning = false;
-      let isPinching = false;
-      let lastPinchX = 0;
-      // Distancias normalizadas (0-1 relativo al ancho del frame) con
-      // histeresis: hace falta abrir mas de PINCH_OFF para soltar, evita
-      // que el ruido de deteccion haga parpadear pinza-cerrada/abierta.
-      const PINCH_ON = 0.055;
-      const PINCH_OFF = 0.08;
+      // Gesto activo (null | 'rotate' | 'pan' | 'zoom'), con los valores de
+      // referencia tomados al RECONOCER el gesto (no en cada frame): igual
+      // patron que el gesto de pinza/giro del modo Suelo (ver "gesture" mas
+      // abajo, startDist/startAngle/startScale/startRotY) - se compara
+      // siempre contra el estado inicial, no se acumulan deltas frame a
+      // frame (evita deriva por ruido de deteccion).
+      let activeGesture = null;
+      const ROTATE_GAIN = 2.5;
+      const PAN_GAIN = 4;
+      // Distancia de pinza (normalizada 0-1) con histeresis para decidir
+      // cuando ENTRAR en el gesto de zoom (no hace falta para salir: basta
+      // con que la mano deje de estar en pose de pinza para que el
+      // clasificador pase a 'pan'/'rotate'/null).
+      const PINCH_ENTER = 0.06;
+
+      function landmarkDist(a, b) {
+        const dx = a.x - b.x, dy = a.y - b.y;
+        return Math.sqrt(dx * dx + dy * dy);
+      }
+      // Heuristica estandar de "dedo extendido": la punta esta mas lejos de
+      // la muñeca que su nudillo (PIP). No depende de que la mano este
+      // "derecha" en la imagen, solo de que el dedo este estirado o no.
+      function isFingerExtended(lm, tipIdx, pipIdx) {
+        return landmarkDist(lm[tipIdx], lm[0]) > landmarkDist(lm[pipIdx], lm[0]);
+      }
+      // Angulo de inclinacion de la palma: vector muñeca(0) -> base del
+      // dedo corazon(9), medido respecto a "hacia arriba" (0 = dedos hacia
+      // arriba, positivo = palma inclinada a la derecha en la imagen).
+      function palmRollAngle(lm) {
+        const wrist = lm[0];
+        const midMcp = lm[9];
+        return Math.atan2(midMcp.x - wrist.x, wrist.y - midMcp.y);
+      }
+      function classifyGesture(lm) {
+        const pinchDist = landmarkDist(lm[4], lm[8]);
+        if (pinchDist < PINCH_ENTER) return 'zoom';
+        const indexExt = isFingerExtended(lm, 8, 6);
+        const middleExt = isFingerExtended(lm, 12, 10);
+        const ringExt = isFingerExtended(lm, 16, 14);
+        const pinkyExt = isFingerExtended(lm, 20, 18);
+        if (indexExt && middleExt && !ringExt && !pinkyExt) return 'pan';
+        if (indexExt && middleExt && ringExt && pinkyExt) return 'rotate';
+        return null;
+      }
 
       async function populateHandCamOptions(preferredDeviceId) {
         handCamSelect.innerHTML = '';
@@ -2111,6 +2159,12 @@
         }
       }
 
+      const GESTURE_LABELS = {
+        rotate: 'Girando (palma abierta)...',
+        pan: 'Moviendo (índice+corazón)...',
+        zoom: 'Escalando (pellizco)...',
+      };
+
       function onHandResults(results) {
         const lm = results.multiHandLandmarks && results.multiHandLandmarks[0];
 
@@ -2119,7 +2173,7 @@
           handPreviewCtx.clearRect(0, 0, handPreviewCanvas.width, handPreviewCanvas.height);
           handPreviewCtx.drawImage(handCamVideo, 0, 0, handPreviewCanvas.width, handPreviewCanvas.height);
           if (lm) {
-            handPreviewCtx.fillStyle = isPinching ? '#5be7ff' : '#ffcf5b';
+            handPreviewCtx.fillStyle = activeGesture ? '#5be7ff' : '#ffcf5b';
             lm.forEach((p) => {
               handPreviewCtx.beginPath();
               handPreviewCtx.arc(p.x * handPreviewCanvas.width, p.y * handPreviewCanvas.height, 3, 0, Math.PI * 2);
@@ -2131,38 +2185,59 @@
         }
 
         if (!lm) {
-          isPinching = false;
+          if (activeGesture?.type === 'zoom') refreshModelBindings(true);
+          activeGesture = null;
           handStatusMsg.textContent = 'Mano no detectada.';
           return;
         }
 
-        const thumb = lm[4];
-        const index = lm[8];
-        const dx = thumb.x - index.x;
-        const dy = thumb.y - index.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        const pinchX = (thumb.x + index.x) / 2;
+        const type = classifyGesture(lm);
 
-        if (!isPinching && dist < PINCH_ON) {
-          isPinching = true;
-          lastPinchX = pinchX;
-        } else if (isPinching && dist > PINCH_OFF) {
-          isPinching = false;
+        if (type !== activeGesture?.type) {
+          // Al SALIR de un gesto de zoom hay que recalcular sombra/seccion
+          // igual que hace el slider "Escala" en su evento 'change' (caro,
+          // no se hace en cada frame de arrastre).
+          if (activeGesture?.type === 'zoom') refreshModelBindings(true);
+          activeGesture = type === 'rotate'
+            ? { type, startAngle: palmRollAngle(lm), startRotZ: userRotZ }
+            : type === 'pan'
+            ? { type, startX: (lm[8].x + lm[12].x) / 2, startY: (lm[8].y + lm[12].y) / 2, startOffset: userOffset.clone() }
+            : type === 'zoom'
+            ? { type, startDist: landmarkDist(lm[4], lm[8]), startK: parseFloat(displayScaleSlider.value) }
+            : null;
         }
 
-        if (isPinching && loadedModel) {
-          const deltaX = pinchX - lastPinchX;
-          lastPinchX = pinchX;
-          // Espejo horizontal (la vista previa esta en espejo con CSS,
-          // mas intuitivo para el usuario) y ganancia mayor que el raton:
-          // el recorrido de la mano delante de la camara es mucho menor
-          // que el de un cursor por toda la pantalla.
-          userRotZ -= deltaX * 6;
+        if (activeGesture?.type === 'rotate' && loadedModel) {
+          const angle = palmRollAngle(lm);
+          userRotZ = activeGesture.startRotZ + (angle - activeGesture.startAngle) * ROTATE_GAIN;
           loadedModel.rotation.z = userRotZ;
+        } else if (activeGesture?.type === 'pan' && loadedModel) {
+          const x = (lm[8].x + lm[12].x) / 2;
+          const y = (lm[8].y + lm[12].y) / 2;
+          // Espejo horizontal (vista previa en espejo, mas intuitivo). El
+          // desplazamiento vertical de la mano mueve el eje Z, que es el
+          // "arriba" de este modo (ver nota de userRotZ mas arriba).
+          userOffset.set(
+            activeGesture.startOffset.x - (x - activeGesture.startX) * PAN_GAIN,
+            activeGesture.startOffset.y,
+            activeGesture.startOffset.z - (y - activeGesture.startY) * PAN_GAIN,
+          );
+          applyDisplayScaleMultiplier(parseFloat(displayScaleSlider.value));
+        } else if (activeGesture?.type === 'zoom' && loadedModel) {
+          const dist = landmarkDist(lm[4], lm[8]);
+          const k = THREE.MathUtils.clamp(
+            activeGesture.startK * (dist / activeGesture.startDist),
+            parseFloat(displayScaleSlider.min),
+            parseFloat(displayScaleSlider.max),
+          );
+          displayScaleSlider.value = k;
+          displayScaleVal.textContent = k * 100 < 1 ? `${(k * 100).toFixed(2)}%` : `${Math.round(k * 100)}%`;
+          applyDisplayScaleMultiplier(k);
         }
-        handStatusMsg.textContent = isPinching
-          ? 'Girando (pinza cerrada)...'
-          : 'Mano detectada. Cierra pulgar+índice para girar.';
+
+        handStatusMsg.textContent = activeGesture
+          ? GESTURE_LABELS[activeGesture.type]
+          : 'Mano detectada. Palma abierta = girar, índice+corazón = mover, pellizco = zoom.';
       }
 
       async function handLoop() {
@@ -2209,7 +2284,7 @@
           }
           handLoopRunning = true;
           handLoop();
-          handStatusMsg.textContent = 'Activo. Cierra pulgar+índice para girar la pieza.';
+          handStatusMsg.textContent = 'Activo. Palma abierta = girar, índice+corazón = mover, pellizco = zoom.';
         } catch (err) {
           console.error('No se pudo iniciar la cámara de mano:', err);
           handStatusMsg.textContent = `Error al abrir la cámara: ${err.message}`;
@@ -2221,7 +2296,7 @@
         handLoopRunning = false;
         if (handRafId) cancelAnimationFrame(handRafId);
         handRafId = null;
-        isPinching = false;
+        activeGesture = null;
         if (handStream) {
           handStream.getTracks().forEach((t) => t.stop());
           handStream = null;
@@ -2267,6 +2342,7 @@
         animDuration = 0;
         animPaused = false;
         userRotZ = 0;
+        userOffset.set(0, 0, 0);
         animPlayPause.textContent = '⏸ Pausa';
         animPanel.classList.add('hidden');
         statePanel.classList.add('hidden');
