@@ -251,6 +251,9 @@
   <canvas id="handPreviewCanvas" width="160" height="120" hidden></canvas>
   <p id="linkStatusMsg" hidden></p>
   <div id="startChoice">
+    <label id="startHandTrackingRow" style="display:flex;align-items:center;gap:8px;color:#fff;font:13px system-ui, sans-serif;">
+      <input type="checkbox" id="startHandTrackingChk" /> ✋ Activar control por manos (solo modo marcador)
+    </label>
     <button id="startBtn">📷 Con marcador</button>
     <button id="startFloorBtn">🖐 Suelo / mesa</button>
     <p id="floorUnsupportedHint" class="hint" hidden>
@@ -337,6 +340,9 @@
         <div class="row" id="zUpFixRow" hidden>
           <label><input type="checkbox" id="zUpFixChk" /> Modelo en Z-up (Blender, sin convertir a Y-up)</label>
         </div>
+        <div class="row">
+          <button id="resetPositionBtn" type="button">↺ Resetear posición/giro/zoom</button>
+        </div>
       </div>
     </section>
 
@@ -421,7 +427,15 @@
         <div class="row">
           <label><input type="checkbox" id="handPreviewChk" checked /> Ver vista previa (para calibrar)</label>
         </div>
-        <p class="hint" id="handStatusMsg">Requiere una cámara distinta a la del marcador (ej. la frontal del portátil si el marcador lo ves con una webcam externa). Gestos: <b>palma abierta</b> inclinada a un lado = girar; <b>índice+corazón extendidos</b> (resto cerrados) = mover; <b>solo índice extendido</b> (corazón/anular/meñique cerrados) + pellizca con el pulgar = zoom, abrir agranda y cerrar empequeñece. Experimental: puede ir lento en portátiles modestos.</p>
+        <p class="hint" id="handStatusMsg">Requiere una cámara distinta a la del marcador (ej. la frontal del portátil si el marcador lo ves con una webcam externa). Gestos:</p>
+        <ul class="hint" style="margin:4px 0 8px; padding-left:18px;">
+          <li><b>Palma abierta</b> (4 dedos) inclinada a un lado = girar.</li>
+          <li><b>Índice+corazón</b> extendidos (resto cerrados) = mover.</li>
+          <li><b>Solo índice</b> extendido + pellizca con el pulgar = zoom (abrir agranda, cerrar empequeñece).</li>
+          <li><b>Shaka</b> (pulgar+meñique estirados, resto cerrado) y mueve la mano a un lado = Sección (se activa sola si estaba apagada).</li>
+          <li><b>Puño cerrado</b> y barre a un lado = cambia de Estado (si hay 2 o más).</li>
+        </ul>
+        <p class="hint">Experimental: puede ir lento en portátiles modestos. Las 5 poses son distintas entre sí para no confundirse, pero si algo se activa sin querer dímelo y se ajusta.</p>
       </div>
     </section>
 
@@ -481,6 +495,15 @@
       diagnosticsEnabled = diagnosticsChk.checked;
       localStorage.setItem('arDiagnosticsEnabled', diagnosticsEnabled ? '1' : '0');
       applyDiagnosticsVisibility();
+    });
+
+    // Elegir en portada si se arranca ya con el control por manos activo,
+    // para no tener que entrar en modo marcador y abrir el Panel Tecnico
+    // cada vez. Solo aplica al modo marcador (startFloorBtn lo ignora).
+    const startHandTrackingChk = document.getElementById('startHandTrackingChk');
+    startHandTrackingChk.checked = localStorage.getItem('arStartWithHandTracking') === '1';
+    startHandTrackingChk.addEventListener('change', () => {
+      localStorage.setItem('arStartWithHandTracking', startHandTrackingChk.checked ? '1' : '0');
     });
 
     // Estado permanente en pantalla (no depende de que ocurra un error):
@@ -790,6 +813,9 @@
     })();
 
     startBtn.addEventListener('click', async () => {
+      // Capturado ANTES de retirar #startChoice del DOM (el checkbox
+      // desaparece con el, hay que leer su valor mientras aun existe).
+      const autoStartHandTracking = startHandTrackingChk.checked;
       document.getElementById('startChoice').remove();
       hint.hidden = false;
       logDebug('Iniciando camara AR...');
@@ -1082,20 +1108,23 @@
         return box;
       }
 
-      // Igual que computeBoxFromMeshes, pero en espacio LOCAL del anchor
-      // (mismo patron que computeShadowBoundsLocal): transforma los 8
-      // vertices de la bounding box de cada malla por su matriz world
-      // relativa al anchor (anchorInv * matrixWorld), en vez de dejar la
-      // caja en espacio de mundo. La Seccion necesita esto porque
-      // clipPlaneLocal se expresa en espacio local y el bucle de render
-      // solo aplica anchor.group.matrixWorld UNA vez para pasarlo a mundo
-      // (clipPlaneWorld); si se alimenta con una caja ya en mundo (como
-      // hacia antes, reusando modelBox), esa transformacion se aplicaba
-      // DOS veces y el plano de corte acababa lejísimos del modelo real -
-      // el slider entero (0-100%) se quedaba sin tocarlo nunca.
+      // Igual que computeBoxFromMeshes, pero en espacio LOCAL de loadedModel
+      // (mismo patron que computeShadowBoundsLocal, pero referenciado al
+      // MODELO, no al anchor): transforma los 8 vertices de la bounding box
+      // de cada malla por su matriz world relativa a loadedModel (modelInv *
+      // matrixWorld). Tiene que ser el modelo y no el anchor porque el
+      // usuario puede girarlo a mano (userRotZ, raton o gesto) - esa
+      // rotacion es un transform de loadedModel, un nodo POR DEBAJO del
+      // anchor. Si la caja/plano se referencian al anchor, el corte se
+      // queda fijo en su orientacion original mientras la geometria sigue
+      // girando debajo y el resultado es un despiece sin sentido (el corte
+      // no "sigue" al giro). Referenciado a loadedModel, en cambio, el
+      // bucle de render solo tiene que aplicar loadedModel.matrixWorld
+      // (que SI incluye la rotacion actual) para que el corte gire con la
+      // pieza automaticamente, sin recalcular la caja en cada frame.
       function computeBoxLocal(meshes, fallbackRoot) {
-        anchor.group.updateMatrixWorld(true);
-        const anchorInv = new THREE.Matrix4().copy(anchor.group.matrixWorld).invert();
+        loadedModel.updateMatrixWorld(true);
+        const modelInv = new THREE.Matrix4().copy(loadedModel.matrixWorld).invert();
         const box = new THREE.Box3();
         box.makeEmpty();
         const source = meshes.length ? meshes : (() => {
@@ -1109,7 +1138,7 @@
           if (!m.geometry) return;
           if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
           m.updateWorldMatrix(true, false);
-          localMat.multiplyMatrices(anchorInv, m.matrixWorld);
+          localMat.multiplyMatrices(modelInv, m.matrixWorld);
           const bb = m.geometry.boundingBox;
           for (let i = 0; i < 8; i++) {
             v.set(
@@ -1127,9 +1156,12 @@
         capSliceMeshes = [];
         clearGroup(capSliceGroup);
         capSliceGroup = new THREE.Group();
-        anchor.group.add(capSliceGroup);
-        anchor.group.updateMatrixWorld(true);
-        const anchorInv = new THREE.Matrix4().copy(anchor.group.matrixWorld).invert();
+        // Colgada de loadedModel (no de anchor.group): asi hereda su
+        // rotacion (userRotZ) automaticamente en cada frame, igual que el
+        // resto de la geometria - ver nota en computeBoxLocal.
+        loadedModel.add(capSliceGroup);
+        loadedModel.updateMatrixWorld(true);
+        const modelInv = new THREE.Matrix4().copy(loadedModel.matrixWorld).invert();
         const capMat = new THREE.MeshBasicMaterial({
           color: 0xe91e63,
           side: THREE.DoubleSide,
@@ -1143,7 +1175,7 @@
 
         sourceMeshes.forEach((child) => {
           child.updateWorldMatrix(true, false);
-          const localMat = new THREE.Matrix4().multiplyMatrices(anchorInv, child.matrixWorld);
+          const localMat = new THREE.Matrix4().multiplyMatrices(modelInv, child.matrixWorld);
           const sliceMesh = new THREE.Mesh(child.geometry, capMat);
           localMat.decompose(sliceMesh.position, sliceMesh.quaternion, sliceMesh.scale);
           sliceMesh.renderOrder = 3;
@@ -1163,9 +1195,12 @@
         wireMeshes = [];
         clearGroup(wireGroup);
         wireGroup = new THREE.Group();
-        anchor.group.add(wireGroup);
-        anchor.group.updateMatrixWorld(true);
-        const anchorInv = new THREE.Matrix4().copy(anchor.group.matrixWorld).invert();
+        // Colgada de loadedModel, no de anchor.group - mismo motivo que
+        // capSliceGroup (ver rebuildCapSliceMeshes): asi hereda el giro
+        // manual del modelo automaticamente en vez de quedarse fija.
+        loadedModel.add(wireGroup);
+        loadedModel.updateMatrixWorld(true);
+        const modelInv = new THREE.Matrix4().copy(loadedModel.matrixWorld).invert();
         const wireMat = new THREE.MeshBasicMaterial({
           color: new THREE.Color(wireColorHex),
           wireframe: true,
@@ -1178,7 +1213,7 @@
 
         sourceMeshes.forEach((child) => {
           child.updateWorldMatrix(true, false);
-          const localMat = new THREE.Matrix4().multiplyMatrices(anchorInv, child.matrixWorld);
+          const localMat = new THREE.Matrix4().multiplyMatrices(modelInv, child.matrixWorld);
           const w = new THREE.Mesh(child.geometry, wireMat);
           localMat.decompose(w.position, w.quaternion, w.scale);
           w.renderOrder = 4;
@@ -1605,6 +1640,13 @@
         leftMenu.classList.remove('hidden');
       }
 
+      function setActiveState(index) {
+        if (activeStateIndex === index) return;
+        activeStateIndex = index;
+        stateEntries.forEach((e, i) => { e.node.visible = i === activeStateIndex; });
+        renderStateButtons();
+        refreshModelBindings(true);
+      }
       function renderStateButtons() {
         stateButtons.innerHTML = '';
         stateEntries.forEach((entry, index) => {
@@ -1613,13 +1655,7 @@
           const isActive = index === activeStateIndex;
           btn.classList.toggle('active', isActive);
           btn.setAttribute('aria-pressed', String(isActive));
-          btn.addEventListener('click', () => {
-            if (activeStateIndex === index) return;
-            activeStateIndex = index;
-            stateEntries.forEach((e, i) => { e.node.visible = i === activeStateIndex; });
-            renderStateButtons();
-            refreshModelBindings(true);
-          });
+          btn.addEventListener('click', () => setActiveState(index));
           stateButtons.appendChild(btn);
         });
       }
@@ -2108,6 +2144,13 @@
       let activeGesture = null;
       const ROTATE_GAIN = 2.5;
       const PAN_GAIN = 4;
+      const SECTION_GAIN = 220;
+      // Distancia horizontal normalizada (0-1) que un puño debe recorrer
+      // para disparar un cambio de Estado. Es un gesto de "swipe" (evento
+      // unico), no un arrastre continuo: por eso no hay ganancia, solo un
+      // umbral y un "ya disparado" (fired) para no repetir el cambio
+      // mientras la mano sigue moviendose en el mismo barrido.
+      const SWIPE_THRESHOLD = 0.16;
 
       function landmarkDist(a, b) {
         const dx = a.x - b.x, dy = a.y - b.y;
@@ -2135,6 +2178,7 @@
       // usa solo DESPUES, como valor continuo de zoom, no como filtro de
       // que gesto es.
       function classifyGesture(lm) {
+        const thumbExt = isFingerExtended(lm, 4, 2);
         const indexExt = isFingerExtended(lm, 8, 6);
         const middleExt = isFingerExtended(lm, 12, 10);
         const ringExt = isFingerExtended(lm, 16, 14);
@@ -2142,6 +2186,12 @@
         if (indexExt && middleExt && ringExt && pinkyExt) return 'rotate';
         if (indexExt && middleExt && !ringExt && !pinkyExt) return 'pan';
         if (indexExt && !middleExt && !ringExt && !pinkyExt) return 'zoom';
+        // "Shaka" (pulgar+meñique estirados, resto cerrado): controla la
+        // Seccion. Pose deliberadamente distinta a las de arriba (todas
+        // necesitan el indice estirado) para que no se confunda con ellas.
+        if (thumbExt && pinkyExt && !indexExt && !middleExt && !ringExt) return 'section';
+        // Puño cerrado (nada estirado): barrido para cambiar de Estado.
+        if (!indexExt && !middleExt && !ringExt && !pinkyExt) return 'state-swipe';
         return null;
       }
 
@@ -2164,6 +2214,8 @@
         rotate: 'Girando (palma abierta)...',
         pan: 'Moviendo (índice+corazón)...',
         zoom: 'Escalando (pellizco)...',
+        section: 'Ajustando Sección (shaka)...',
+        'state-swipe': 'Puño: barre a un lado para cambiar de Estado.',
       };
 
       function onHandResults(results) {
@@ -2205,6 +2257,10 @@
             ? { type, startX: (lm[8].x + lm[12].x) / 2, startY: (lm[8].y + lm[12].y) / 2, startOffset: userOffset.clone() }
             : type === 'zoom'
             ? { type, startDist: landmarkDist(lm[4], lm[8]), startK: parseFloat(displayScaleSlider.value) }
+            : type === 'section'
+            ? { type, startX: lm[0].x, startSlider: parseFloat(clipSlider.value) }
+            : type === 'state-swipe'
+            ? { type, startX: lm[0].x, fired: false }
             : null;
         }
 
@@ -2234,11 +2290,30 @@
           displayScaleSlider.value = k;
           displayScaleVal.textContent = k * 100 < 1 ? `${(k * 100).toFixed(2)}%` : `${Math.round(k * 100)}%`;
           applyDisplayScaleMultiplier(k);
+        } else if (activeGesture?.type === 'section') {
+          // Activar Seccion sola si el usuario hace el gesto dedicado: sin
+          // esto el gesto no tendria ningun efecto visible la primera vez.
+          if (!clipEnabledChk.checked) {
+            clipEnabledChk.checked = true;
+            clipEnabled = true;
+          }
+          const dx = lm[0].x - activeGesture.startX;
+          clipSlider.value = THREE.MathUtils.clamp(activeGesture.startSlider - dx * SECTION_GAIN, 0, 100);
+          applyClipState();
+        } else if (activeGesture?.type === 'state-swipe' && !activeGesture.fired && stateEntries.length >= 2) {
+          const dx = lm[0].x - activeGesture.startX;
+          if (Math.abs(dx) > SWIPE_THRESHOLD) {
+            // Espejo horizontal, igual criterio que el resto de gestos:
+            // barrer a la derecha (en la vista, espejada) = siguiente Estado.
+            const dir = dx < 0 ? 1 : -1;
+            setActiveState((activeStateIndex + dir + stateEntries.length) % stateEntries.length);
+            activeGesture.fired = true;
+          }
         }
 
         handStatusMsg.textContent = activeGesture
           ? GESTURE_LABELS[activeGesture.type]
-          : 'Mano detectada. Palma abierta = girar, índice+corazón = mover, pellizco = zoom.';
+          : 'Mano detectada. Palma=girar, índice+corazón=mover, pellizco=zoom, shaka=sección, puño+barrido=estado.';
       }
 
       async function handLoop() {
@@ -2320,6 +2395,27 @@
       handPreviewChk.addEventListener('change', () => {
         if (!handTrackingChk.checked || !handPreviewChk.checked) handPreviewCanvas.hidden = true;
       });
+
+      // Vuelve el giro/desplazamiento/zoom manuales (raton o mano) al punto
+      // de partida calibrado - NO toca Estados/Capas/Seccion, solo lo que
+      // este boton mismo puede desajustar.
+      document.getElementById('resetPositionBtn').addEventListener('click', () => {
+        if (!loadedModel) return;
+        userRotZ = 0;
+        userOffset.set(0, 0, 0);
+        loadedModel.rotation.z = 0;
+        displayScaleSlider.value = 1;
+        displayScaleVal.textContent = '100%';
+        applyDisplayScaleMultiplier(1);
+        refreshModelBindings(true);
+      });
+
+      // Arranque directo con manos si se marco la casilla en portada (ver
+      // "autoStartHandTracking" al principio de este handler).
+      if (autoStartHandTracking) {
+        handTrackingChk.checked = true;
+        startHandTracking();
+      }
 
       // Cambiar de modelo SIN reiniciar la camara/marcador: el target no
       // cambia, solo se recarga y recalibra el modelo contra el mismo
@@ -2555,10 +2651,16 @@
             animTime.textContent = t.toFixed(1) + 's';
           }
         }
+        // anchor.group.updateMatrixWorld(true) recorre TODO el subarbol,
+        // loadedModel incluido - por eso loadedModel.matrixWorld de abajo
+        // ya sale al dia con el giro manual (userRotZ) de este mismo frame,
+        // sin necesidad de otra llamada aparte.
         anchor.group.updateMatrixWorld(true);
-        const m4 = anchor.group.matrixWorld;
-        clipPlaneWorld.copy(clipPlaneLocal).applyMatrix4(m4);
-        backClipPlaneWorld.copy(backClipPlaneLocal).applyMatrix4(m4);
+        if (loadedModel) {
+          const m4 = loadedModel.matrixWorld;
+          clipPlaneWorld.copy(clipPlaneLocal).applyMatrix4(m4);
+          backClipPlaneWorld.copy(backClipPlaneLocal).applyMatrix4(m4);
+        }
 
         if (shadowsEnabled) {
           // Forzar el update del pase de sombras en cada frame mientras
