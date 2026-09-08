@@ -2154,20 +2154,30 @@
       const PAN_GAIN = 4;
       const SECTION_GAIN = 220;
       // Angulo (rad) de giro de muñeca en shaka por cada paso de eje
-      // Planta->Alzado->Perfil. ~45 grados: ni tan poco que se dispare sin
-      // querer, ni tan mucho que incomode la muñeca.
-      const SECTION_AXIS_STEP = Math.PI / 4;
+      // Planta->Alzado->Perfil. Subido de 45 a 72 grados (de Math.PI/4 a
+      // Math.PI*0.4): con 45 se disparaba solo, mezclado con ruido del
+      // gesto de zoom/giro de la palma.
+      const SECTION_AXIS_STEP = Math.PI * 0.4;
       const AXIS_ORDER = ['z', 'x', 'y']; // Planta, Alzado, Perfil (mismo orden que axisButtons)
+      // Frames seguidos que una pose tiene que repetirse para que el gesto
+      // activo cambie de verdad (debounce). Sin esto, un solo frame mal
+      // leido por MediaPipe (tipico durante el giro de muñeca, o con un
+      // puño que no esta perfectamente cerrado) podia colarse como 'palm'
+      // o 'section' un instante y disparar algo sin querer.
+      const GESTURE_DEBOUNCE_FRAMES = 4;
+      let pendingGestureType = null;
+      let pendingGestureCount = 0;
 
       function landmarkDist(a, b) {
         const dx = a.x - b.x, dy = a.y - b.y;
         return Math.sqrt(dx * dx + dy * dy);
       }
-      // Heuristica estandar de "dedo extendido": la punta esta mas lejos de
-      // la muñeca que su nudillo (PIP). No depende de que la mano este
-      // "derecha" en la imagen, solo de que el dedo este estirado o no.
+      // Heuristica de "dedo extendido": la punta esta mas lejos de la
+      // muñeca que su nudillo (PIP), con un 15% de margen (no solo "algo"
+      // mas lejos) para que un puño no perfectamente cerrado, o dedos a
+      // medio doblar durante un gesto, no cuenten como estirados por poco.
       function isFingerExtended(lm, tipIdx, pipIdx) {
-        return landmarkDist(lm[tipIdx], lm[0]) > landmarkDist(lm[pipIdx], lm[0]);
+        return landmarkDist(lm[tipIdx], lm[0]) > landmarkDist(lm[pipIdx], lm[0]) * 1.15;
       }
       // Angulo de inclinacion de la palma: vector muñeca(0) -> base del
       // dedo corazon(9), medido respecto a "hacia arriba" (0 = dedos hacia
@@ -2251,11 +2261,24 @@
         if (!lm) {
           if (activeGesture?.type === 'palm') refreshModelBindings(true);
           activeGesture = null;
+          pendingGestureType = null;
+          pendingGestureCount = 0;
           handStatusMsg.textContent = 'Mano no detectada.';
           return;
         }
 
-        const type = classifyGesture(lm);
+        const rawType = classifyGesture(lm);
+        // Debounce: solo se acepta un cambio de gesto tras ver la MISMA
+        // pose varios frames seguidos (ver GESTURE_DEBOUNCE_FRAMES). Hasta
+        // entonces se sigue tratando como el gesto activo actual (o null),
+        // asi un frame suelto mal leido no dispara ni corta nada.
+        if (rawType === pendingGestureType) {
+          pendingGestureCount++;
+        } else {
+          pendingGestureType = rawType;
+          pendingGestureCount = 1;
+        }
+        const type = pendingGestureCount >= GESTURE_DEBOUNCE_FRAMES ? rawType : (activeGesture?.type ?? null);
 
         if (type !== activeGesture?.type) {
           // Al SALIR de un gesto de zoom (ahora parte de 'palm') hay que
@@ -2276,7 +2299,9 @@
             ? {
                 type,
                 startX: lm[0].x,
-                startSlider: parseFloat(clipSlider.value),
+                // Siempre arranca en 0%, no en lo que tuviera el slider antes
+                // (evita un salto brusco del corte al reconocer el gesto).
+                startSlider: 0,
                 startAngle: shakaRollAngle(lm),
                 startAxisIdx: Math.max(0, AXIS_ORDER.indexOf(clipAxis)),
                 lastAxisStep: 0,
