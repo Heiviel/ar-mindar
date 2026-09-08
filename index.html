@@ -36,6 +36,11 @@
     position:absolute; z-index:10; left:0; right:0; bottom:16px; text-align:center;
     color:#fff; font:14px system-ui, sans-serif; opacity:.8; pointer-events:none;
   }
+  #handPreviewCanvas {
+    position:absolute; z-index:12; right:12px; bottom:60px;
+    width:160px; height:120px; border:1px solid rgba(255,255,255,.4);
+    border-radius:8px; background:#000; transform:scaleX(-1);
+  }
   #linkStatusMsg {
     position:absolute; z-index:10; left:50%; top:calc(50% - 46px); transform:translate(-50%,-100%);
     max-width:min(320px, 86vw); text-align:center; margin:0;
@@ -243,6 +248,7 @@
   <div id="container">
     <video id="camBg" autoplay muted playsinline></video>
   </div>
+  <canvas id="handPreviewCanvas" width="160" height="120" hidden></canvas>
   <p id="linkStatusMsg" hidden></p>
   <div id="startChoice">
     <button id="startBtn">📷 Con marcador</button>
@@ -402,6 +408,23 @@
       </div>
     </section>
 
+    <section class="group collapsed" id="handControlPanel">
+      <h4 class="groupTitle"><button type="button" class="groupToggleBtn" aria-expanded="false" aria-controls="handControlPanelBody">Control por manos (beta)</button></h4>
+      <div class="groupBody" id="handControlPanelBody">
+        <div class="row">
+          <label><input type="checkbox" id="handTrackingChk" /> Activar seguimiento de mano</label>
+        </div>
+        <div class="row" id="handCamRow" hidden>
+          <label for="handCamSelect">Cámara para la mano</label>
+          <select id="handCamSelect"></select>
+        </div>
+        <div class="row">
+          <label><input type="checkbox" id="handPreviewChk" checked /> Ver vista previa (para calibrar)</label>
+        </div>
+        <p class="hint" id="handStatusMsg">Requiere una cámara distinta a la del marcador (ej. la frontal del portátil si el marcador lo ves con una webcam externa). Cierra pulgar+índice (pinza) y mueve la mano para girar la pieza, como al arrastrar con el ratón. Experimental: puede ir lento en portátiles modestos.</p>
+      </div>
+    </section>
+
     <section class="group collapsed" id="diagnosticsPanel">
       <h4 class="groupTitle"><button type="button" class="groupToggleBtn" aria-expanded="false" aria-controls="diagnosticsPanelBody">Diagnóstico</button></h4>
       <div class="groupBody" id="diagnosticsPanelBody">
@@ -413,6 +436,11 @@
     </section>
     </div>
   </aside>
+
+  <!-- MediaPipe Hands (control por manos, beta): script clasico, expone
+       "Hands" en window. No tiene build ESM apto para el importmap de abajo,
+       asi que se carga aparte y se referencia como global desde el modulo. -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
 
   <script type="importmap">
   {
@@ -2035,6 +2063,187 @@
         loadedModel.rotation.z = userRotZ;
       });
       window.addEventListener('mouseup', () => { isDraggingModel = false; });
+
+      // Control por manos (beta): segunda camara independiente (normalmente
+      // la frontal del portatil, distinta de la que usa MindAR para ver el
+      // marcador) + MediaPipe Hands corriendo en el navegador. Gesto: pinza
+      // (pulgar+indice juntos) y mover la mano = igual que arrastrar con el
+      // raton, reutiliza "userRotZ". Pensado para cuando ya se usa una
+      // webcam externa para el marcador y la camara del portatil queda
+      // libre. Todo dentro de un try/catch amplio porque depende de
+      // hardware/permisos del usuario que aqui no se pueden probar.
+      const handTrackingChk = document.getElementById('handTrackingChk');
+      const handCamRow = document.getElementById('handCamRow');
+      const handCamSelect = document.getElementById('handCamSelect');
+      const handPreviewChk = document.getElementById('handPreviewChk');
+      const handStatusMsg = document.getElementById('handStatusMsg');
+      const handPreviewCanvas = document.getElementById('handPreviewCanvas');
+      const handPreviewCtx = handPreviewCanvas.getContext('2d');
+      const handCamVideo = document.createElement('video');
+      handCamVideo.autoplay = true;
+      handCamVideo.muted = true;
+      handCamVideo.playsInline = true;
+
+      let handStream = null;
+      let handsModel = null;
+      let handRafId = null;
+      let handLoopRunning = false;
+      let isPinching = false;
+      let lastPinchX = 0;
+      // Distancias normalizadas (0-1 relativo al ancho del frame) con
+      // histeresis: hace falta abrir mas de PINCH_OFF para soltar, evita
+      // que el ruido de deteccion haga parpadear pinza-cerrada/abierta.
+      const PINCH_ON = 0.055;
+      const PINCH_OFF = 0.08;
+
+      async function populateHandCamOptions(preferredDeviceId) {
+        handCamSelect.innerHTML = '';
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const cams = devices.filter((d) => d.kind === 'videoinput');
+        cams.forEach((d, i) => {
+          const opt = document.createElement('option');
+          opt.value = d.deviceId;
+          opt.textContent = d.label || `Cámara ${i + 1}`;
+          handCamSelect.appendChild(opt);
+        });
+        if (preferredDeviceId && cams.some((d) => d.deviceId === preferredDeviceId)) {
+          handCamSelect.value = preferredDeviceId;
+        }
+      }
+
+      function onHandResults(results) {
+        const lm = results.multiHandLandmarks && results.multiHandLandmarks[0];
+
+        if (handPreviewChk.checked) {
+          handPreviewCanvas.hidden = false;
+          handPreviewCtx.clearRect(0, 0, handPreviewCanvas.width, handPreviewCanvas.height);
+          handPreviewCtx.drawImage(handCamVideo, 0, 0, handPreviewCanvas.width, handPreviewCanvas.height);
+          if (lm) {
+            handPreviewCtx.fillStyle = isPinching ? '#5be7ff' : '#ffcf5b';
+            lm.forEach((p) => {
+              handPreviewCtx.beginPath();
+              handPreviewCtx.arc(p.x * handPreviewCanvas.width, p.y * handPreviewCanvas.height, 3, 0, Math.PI * 2);
+              handPreviewCtx.fill();
+            });
+          }
+        } else {
+          handPreviewCanvas.hidden = true;
+        }
+
+        if (!lm) {
+          isPinching = false;
+          handStatusMsg.textContent = 'Mano no detectada.';
+          return;
+        }
+
+        const thumb = lm[4];
+        const index = lm[8];
+        const dx = thumb.x - index.x;
+        const dy = thumb.y - index.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const pinchX = (thumb.x + index.x) / 2;
+
+        if (!isPinching && dist < PINCH_ON) {
+          isPinching = true;
+          lastPinchX = pinchX;
+        } else if (isPinching && dist > PINCH_OFF) {
+          isPinching = false;
+        }
+
+        if (isPinching && loadedModel) {
+          const deltaX = pinchX - lastPinchX;
+          lastPinchX = pinchX;
+          // Espejo horizontal (la vista previa esta en espejo con CSS,
+          // mas intuitivo para el usuario) y ganancia mayor que el raton:
+          // el recorrido de la mano delante de la camara es mucho menor
+          // que el de un cursor por toda la pantalla.
+          userRotZ -= deltaX * 6;
+          loadedModel.rotation.z = userRotZ;
+        }
+        handStatusMsg.textContent = isPinching
+          ? 'Girando (pinza cerrada)...'
+          : 'Mano detectada. Cierra pulgar+índice para girar.';
+      }
+
+      async function handLoop() {
+        if (!handLoopRunning) return;
+        if (handCamVideo.readyState >= 2) {
+          try {
+            await handsModel.send({ image: handCamVideo });
+          } catch (err) {
+            console.error('MediaPipe Hands: fallo procesando frame:', err);
+          }
+        }
+        if (handLoopRunning) handRafId = requestAnimationFrame(handLoop);
+      }
+
+      async function startHandTracking() {
+        if (typeof Hands === 'undefined') {
+          handStatusMsg.textContent = 'No se pudo cargar MediaPipe Hands (¿sin conexión?).';
+          handTrackingChk.checked = false;
+          return;
+        }
+        try {
+          handStatusMsg.textContent = 'Pidiendo acceso a la cámara...';
+          const deviceId = handCamSelect.value || undefined;
+          handStream = await navigator.mediaDevices.getUserMedia({
+            video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: 'user' },
+            audio: false,
+          });
+          handCamVideo.srcObject = handStream;
+          await handCamVideo.play();
+          await populateHandCamOptions(handStream.getVideoTracks()[0].getSettings().deviceId);
+          handCamRow.hidden = false;
+
+          if (!handsModel) {
+            handsModel = new Hands({
+              locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`,
+            });
+            handsModel.setOptions({
+              maxNumHands: 1,
+              modelComplexity: 0,
+              minDetectionConfidence: 0.6,
+              minTrackingConfidence: 0.6,
+            });
+            handsModel.onResults(onHandResults);
+          }
+          handLoopRunning = true;
+          handLoop();
+          handStatusMsg.textContent = 'Activo. Cierra pulgar+índice para girar la pieza.';
+        } catch (err) {
+          console.error('No se pudo iniciar la cámara de mano:', err);
+          handStatusMsg.textContent = `Error al abrir la cámara: ${err.message}`;
+          handTrackingChk.checked = false;
+        }
+      }
+
+      function stopHandTracking() {
+        handLoopRunning = false;
+        if (handRafId) cancelAnimationFrame(handRafId);
+        handRafId = null;
+        isPinching = false;
+        if (handStream) {
+          handStream.getTracks().forEach((t) => t.stop());
+          handStream = null;
+        }
+        handPreviewCanvas.hidden = true;
+        handCamRow.hidden = true;
+        handStatusMsg.textContent = 'Desactivado.';
+      }
+
+      handTrackingChk.addEventListener('change', () => {
+        if (handTrackingChk.checked) startHandTracking();
+        else stopHandTracking();
+      });
+      handCamSelect.addEventListener('change', () => {
+        if (!handTrackingChk.checked) return;
+        stopHandTracking();
+        handTrackingChk.checked = true;
+        startHandTracking();
+      });
+      handPreviewChk.addEventListener('change', () => {
+        if (!handTrackingChk.checked || !handPreviewChk.checked) handPreviewCanvas.hidden = true;
+      });
 
       // Cambiar de modelo SIN reiniciar la camara/marcador: el target no
       // cambia, solo se recarga y recalibra el modelo contra el mismo
