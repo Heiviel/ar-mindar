@@ -601,6 +601,10 @@
     let pickedTargetFile = null;
     let pickedModelFile = null;
     let isViewMode = false;
+    // true en cuanto arranca modo marcador (ver startBtn), para toda la
+    // vida de la pagina (no hay "salir" explicito). Usado solo para saber
+    // si cambiar el marcador debe forzar un reinicio (ver mas abajo).
+    let markerModeActive = false;
 
     function updatePickedNameHint() {
       const parts = [];
@@ -616,6 +620,16 @@
       pickedTargetFile = file;
       resolvedTargetSrc = URL.createObjectURL(file);
       updatePickedNameHint();
+      // MindAR fija el marcador al crear el controller una sola vez: con
+      // la camara ya activa, cambiar el archivo aqui antes no hacia nada
+      // (seguia rastreando el marcador viejo, en silencio). Se fuerza un
+      // reinicio real de la pagina, guardando antes el marcador+modelo
+      // actuales para volver a entrar en modo marcador automaticamente
+      // (ver savePendingResume/tryAutoResume) sin pasar por la portada.
+      if (markerModeActive) {
+        logDebug('Marcador cambiado con la cámara activa: MindAR no soporta esto en caliente, reiniciando...', 'pending');
+        savePendingResume('marker').then(() => location.reload());
+      }
     });
     modelFileInput.addEventListener('change', () => {
       const file = modelFileInput.files?.[0];
@@ -653,6 +667,96 @@
         req.onsuccess = () => resolve(req.result || null);
         req.onerror = () => reject(req.error);
       }));
+    }
+
+    // --- Recuperacion tras recarga (misma IndexedDB que "link de prueba",
+    // registro fijo aparte de los que genera el usuario) ---------------
+    // Dos escenarios necesitan esto:
+    //  1) Modo Suelo: cambiar de modelo con la sesion WebXR activa abre el
+    //     selector nativo de archivos, que en Android puede hacer que el
+    //     sistema mate la pestaña entera por memoria (sesion WebXR ya
+    //     pesada) - no un fallo de JS, la pagina se recarga de cero y
+    //     vuelve a la portada con el modelo por defecto.
+    //  2) Modo marcador: MindAR fija el marcador (imageTargetSrc) al crear
+    //     el controller una sola vez - no soporta cambiar de marcador en
+    //     caliente sobre una sesion ya viva, asi que cambiarlo con la
+    //     camara activa antes no hacia nada (la variable se actualizaba
+    //     pero MindAR seguia rastreando el marcador viejo). Aqui se ataja
+    //     forzando un reinicio real (location.reload) en vez de dejarlo
+    //     fallar en silencio.
+    // En ambos casos: guardar el archivo elegido en IndexedDB + un flag en
+    // sessionStorage (sessionStorage SI sobrevive tanto a un reload
+    // deliberado como al "tab discarding" de Android) para que, al volver
+    // a cargar la pagina, se detecte y se reentre en el modo que tocaba
+    // automaticamente, sin pasar por la portada.
+    const PENDING_RESUME_ID = '__pending_resume__';
+    async function savePendingResume(mode) {
+      try {
+        await saveShareLink({
+          id: PENDING_RESUME_ID,
+          mode,
+          targetBlob: pickedTargetFile || null,
+          modelBlob: pickedModelFile || null,
+          targetName: pickedTargetFile?.name || null,
+          modelName: pickedModelFile?.name || null,
+          createdAt: Date.now(),
+          // Ventana corta: solo cubre el hueco real del selector de
+          // archivos/recarga, no debe quedar "pegado" indefinidamente.
+          expiresAt: Date.now() + 10 * 60 * 1000,
+        });
+        sessionStorage.setItem('arPendingResumeMode', mode);
+      } catch (err) {
+        logDebug(`No se pudo guardar el estado de recuperacion: ${err?.message || err}`, 'error');
+      }
+    }
+    async function clearPendingResume() {
+      sessionStorage.removeItem('arPendingResumeMode');
+      try {
+        const db = await openShareDB();
+        db.transaction('links', 'readwrite').objectStore('links').delete(PENDING_RESUME_ID);
+      } catch (err) {
+        logDebug(`No se pudo limpiar el estado de recuperacion: ${err?.message || err}`, 'error');
+      }
+    }
+    async function tryAutoResume() {
+      const mode = sessionStorage.getItem('arPendingResumeMode');
+      if (!mode) return false;
+      sessionStorage.removeItem('arPendingResumeMode'); // un solo intento
+      let record = null;
+      try {
+        record = await loadShareLink(PENDING_RESUME_ID);
+      } catch (err) {
+        logDebug(`Error leyendo estado de recuperacion: ${err?.message || err}`, 'error');
+      }
+      if (!record || (record.expiresAt && Date.now() > record.expiresAt)) return false;
+      if (record.targetBlob) {
+        pickedTargetFile = record.targetBlob;
+        resolvedTargetSrc = URL.createObjectURL(record.targetBlob);
+      }
+      if (record.modelBlob) {
+        pickedModelFile = record.modelBlob;
+        resolvedModelSrc = URL.createObjectURL(record.modelBlob);
+      }
+      updatePickedNameHint();
+      logDebug(`Recuperando sesión tras recarga (modo ${mode})...`, 'ok');
+      if (mode === 'floor') {
+        // WebXR exige un toque REAL del usuario para requestSession() -
+        // recuperar el foco tras una recarga no cuenta, así que no se
+        // puede reentrar solo (mismo motivo por el que ya existía el
+        // botón "Reanudar cámara AR" para el caso de la sesión cortada a
+        // medias). Se reutiliza ese mismo botón: un toque en vez de tener
+        // que volver a elegir modo y archivo desde cero.
+        document.getElementById('startChoice')?.remove();
+        hint.hidden = false;
+        hint.textContent = 'La página se reinició sola (Android puede hacerlo por memoria). Tu modelo se recuperó — toca "Reanudar cámara AR" para continuar.';
+        resumeArBtn.hidden = false;
+      } else if (mode === 'marker') {
+        // getUserMedia (camara normal, no WebXR) no exige gesto nuevo si
+        // el permiso ya estaba concedido, así que aquí sí se puede
+        // reentrar solo.
+        startBtn.click();
+      }
+      return true;
     }
 
     const DAY_MS = 86400000;
@@ -772,8 +876,6 @@
       }
     }
 
-    await resolveAssetsFromUrl();
-
     // Modo "Suelo/mesa": WebXR Hit Test. Solo Chrome/Android con ARCore lo
     // soporta hoy (Safari/iOS no implementa WebXR para AR) — se detecta y
     // se deshabilita el boton con una explicacion en vez de dejar que falle
@@ -795,7 +897,9 @@
     })();
 
     startBtn.addEventListener('click', async () => {
-      document.getElementById('startChoice').remove();
+      document.getElementById('startChoice')?.remove();
+      markerModeActive = true;
+      clearPendingResume(); // limpieza normal: entrada nueva, no venimos de un reinicio a medias
       hint.hidden = false;
       logDebug('Iniciando camara AR...');
 
@@ -2802,6 +2906,7 @@
 
     async function startFloorMode() {
       document.getElementById('startChoice')?.remove();
+      clearPendingResume(); // entrada nueva o reanudacion ya en marcha: no hace falta conservarlo
       hint.hidden = false;
       hint.textContent = 'Mueve el móvil despacio hasta detectar el suelo o una mesa (aro azul) y toca la pantalla para colocar el modelo';
       logDebug('Iniciando modo Suelo/mesa (WebXR Hit Test)...');
@@ -3770,12 +3875,27 @@
       const modelFileInputEl = document.getElementById('modelFileInput');
       if (currentModelChangeHandler) modelFileInputEl.removeEventListener('change', currentModelChangeHandler);
       if (currentModelClickHandler) modelFileInputEl.removeEventListener('click', currentModelClickHandler);
-      currentModelChangeHandler = () => loadFloorModel(resolvedModelSrc, pickedModelFile?.name || resolvedModelSrc);
+      currentModelChangeHandler = () => {
+        // Reguardar YA con el archivo nuevo (el listener global de
+        // modelFileInput, registrado antes que este, ya actualizo
+        // pickedModelFile/resolvedModelSrc): si Android mata la pestaña
+        // justo despues de elegir el archivo, la recuperacion usa este
+        // modelo, no el anterior al selector.
+        savePendingResume('floor');
+        loadFloorModel(resolvedModelSrc, pickedModelFile?.name || resolvedModelSrc);
+      };
       // "click" en el input marca que viene un dialogo nativo: en Android
       // eso termina la sesion WebXR activa (el sistema le quita la
       // pantalla completa al navegador). Se usa en el listener de "end"
       // del bucle de render para saber que ese cierre es "esperado".
-      currentModelClickHandler = () => { expectingFileDialog = true; };
+      // Tambien guarda YA el modelo actual por si Android decide matar la
+      // pestaña entera (no solo la sesion WebXR) mientras el selector
+      // nativo tiene el foco - sin esto, ese caso volvia a la portada con
+      // el modelo por defecto sin ningun aviso.
+      currentModelClickHandler = () => {
+        expectingFileDialog = true;
+        savePendingResume('floor');
+      };
       modelFileInputEl.addEventListener('change', currentModelChangeHandler);
       modelFileInputEl.addEventListener('click', currentModelClickHandler);
       // El selector de marcador (.mind) no aplica a este modo — no hay
@@ -3851,6 +3971,18 @@
         renderer.render(scene, camera);
       });
     }
+
+    // Se ejecuta al FINAL del modulo a proposito: tryAutoResume() puede
+    // llamar a startFloorMode(), que usa "currentRenderer" y las demas
+    // variables "let" declaradas justo antes de su definicion (mas arriba
+    // en este mismo archivo) - llamarla antes de que esas declaraciones se
+    // hayan ejecutado revienta con "Cannot access before initialization"
+    // (temporal dead zone). Aqui, al final, todo el modulo ya se ha
+    // evaluado de arriba a abajo.
+    (async () => {
+      const autoResumed = await tryAutoResume();
+      if (!autoResumed) await resolveAssetsFromUrl();
+    })();
   </script>
 </body>
 </html>
