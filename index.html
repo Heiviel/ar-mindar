@@ -460,7 +460,22 @@
   <script type="module">
     import * as THREE from 'three';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
     import { MindARThree } from 'mind-ar';
+
+    // Entorno generico (sin ningun HDR externo, generado por codigo) para
+    // que los materiales tipo cristal/metal (Principled BSDF con Alpha<1
+    // o Metallic alto) tengan algo que reflejar. Sin esto salen casi
+    // negros: el PBR de three.js depende del entorno para las reflexiones,
+    // no solo de las luces ambiente/direccional que ya tiene la escena.
+    // NO sirve para dar transmision/refraccion real (eso no funciona en
+    // esta app - ver notas de Seccion sobre camara fuera de la escena
+    // three.js), solo el reflejo especular de superficies brillantes.
+    function applyEnvironment(renderer, scene) {
+      const pmremGenerator = new THREE.PMREMGenerator(renderer);
+      scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+      pmremGenerator.dispose();
+    }
 
     const startBtn = document.getElementById('startBtn');
     const hint = document.getElementById('hint');
@@ -911,6 +926,7 @@
       });
 
       const { renderer, scene, camera } = mindarThree;
+      applyEnvironment(renderer, scene);
       // El plano lejano (far) por defecto de MindAR se queda corto para
       // modelos calibrados grandes o escalados hacia arriba con el slider
       // "Escala" (>100%): la escala del anchor multiplica el tamano real
@@ -2938,6 +2954,7 @@
       currentRenderer = renderer;
 
       const scene = new THREE.Scene();
+      applyEnvironment(renderer, scene);
       const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 50);
       window.addEventListener('resize', () => {
         renderer.setSize(window.innerWidth, window.innerHeight);
