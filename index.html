@@ -447,11 +447,6 @@
     </div>
   </aside>
 
-  <!-- MediaPipe Hands (control por manos, beta): script clasico, expone
-       "Hands" en window. No tiene build ESM apto para el importmap de abajo,
-       asi que se carga aparte y se referencia como global desde el modulo. -->
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
-
   <script type="importmap">
   {
     "imports": {
@@ -2375,8 +2370,35 @@
         if (handLoopRunning) handRafId = requestAnimationFrame(handLoop);
       }
 
+      // MediaPipe Hands se carga BAJO DEMANDA (nunca en el <head>): cargarlo
+      // siempre, incluso en modo Suelo o si nunca se activa el control por
+      // manos, sumaba memoria de base a la pestaña en todo momento - y es
+      // sospechoso de que Android descartase la pestaña entera (recarga
+      // completa, vuelta a la portada) al abrir el selector nativo de
+      // archivos durante una sesion WebXR ya de por si pesada en modo
+      // Suelo. Se pide una sola vez (cacheada en mediaPipeHandsLoadPromise)
+      // y solo la primera vez que el usuario activa el checkbox.
+      let mediaPipeHandsLoadPromise = null;
+      function loadMediaPipeHandsScript() {
+        if (typeof Hands !== 'undefined') return Promise.resolve();
+        if (!mediaPipeHandsLoadPromise) {
+          mediaPipeHandsLoadPromise = new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js';
+            script.crossOrigin = 'anonymous';
+            script.onload = () => resolve();
+            script.onerror = () => reject(new Error('fallo de red'));
+            document.head.appendChild(script);
+          });
+        }
+        return mediaPipeHandsLoadPromise;
+      }
+
       async function startHandTracking() {
-        if (typeof Hands === 'undefined') {
+        try {
+          handStatusMsg.textContent = 'Cargando MediaPipe Hands...';
+          await loadMediaPipeHandsScript();
+        } catch (err) {
           handStatusMsg.textContent = 'No se pudo cargar MediaPipe Hands (¿sin conexión?).';
           handTrackingChk.checked = false;
           return;
