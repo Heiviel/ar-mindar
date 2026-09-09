@@ -251,9 +251,6 @@
   <canvas id="handPreviewCanvas" width="160" height="120" hidden></canvas>
   <p id="linkStatusMsg" hidden></p>
   <div id="startChoice">
-    <label id="startHandTrackingRow" style="display:flex;align-items:center;gap:8px;color:#fff;font:13px system-ui, sans-serif;">
-      <input type="checkbox" id="startHandTrackingChk" /> ✋ Activar control por manos (solo modo marcador)
-    </label>
     <button id="startBtn">📷 Con marcador</button>
     <button id="startFloorBtn">🖐 Suelo / mesa</button>
     <p id="floorUnsupportedHint" class="hint" hidden>
@@ -494,15 +491,6 @@
       diagnosticsEnabled = diagnosticsChk.checked;
       localStorage.setItem('arDiagnosticsEnabled', diagnosticsEnabled ? '1' : '0');
       applyDiagnosticsVisibility();
-    });
-
-    // Elegir en portada si se arranca ya con el control por manos activo,
-    // para no tener que entrar en modo marcador y abrir el Panel Tecnico
-    // cada vez. Solo aplica al modo marcador (startFloorBtn lo ignora).
-    const startHandTrackingChk = document.getElementById('startHandTrackingChk');
-    startHandTrackingChk.checked = localStorage.getItem('arStartWithHandTracking') === '1';
-    startHandTrackingChk.addEventListener('change', () => {
-      localStorage.setItem('arStartWithHandTracking', startHandTrackingChk.checked ? '1' : '0');
     });
 
     // Estado permanente en pantalla (no depende de que ocurra un error):
@@ -812,9 +800,6 @@
     })();
 
     startBtn.addEventListener('click', async () => {
-      // Capturado ANTES de retirar #startChoice del DOM (el checkbox
-      // desaparece con el, hay que leer su valor mientras aun existe).
-      const autoStartHandTracking = startHandTrackingChk.checked;
       document.getElementById('startChoice').remove();
       hint.hidden = false;
       logDebug('Iniciando camara AR...');
@@ -2471,13 +2456,6 @@
         applyDisplayScaleMultiplier(1);
         refreshModelBindings(true);
       });
-
-      // Arranque directo con manos si se marco la casilla en portada (ver
-      // "autoStartHandTracking" al principio de este handler).
-      if (autoStartHandTracking) {
-        handTrackingChk.checked = true;
-        startHandTracking();
-      }
 
       // Cambiar de modelo SIN reiniciar la camara/marcador: el target no
       // cambia, solo se recarga y recalibra el modelo contra el mismo
