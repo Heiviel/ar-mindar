@@ -333,6 +333,10 @@
           <label><input type="checkbox" id="freezePositionChk" /> 🔒 Congelar posición</label>
         </div>
         <p class="hint">Para cámara y marcador fijos (ej. webcam en PC sobre un plano en la mesa): fija el modelo en su sitio actual e ignora el temblor del tracking en vivo. Si mueves la cámara o el marcador después de activarlo, el modelo NO les seguirá — desactívalo para eso.</p>
+        <div class="row">
+          <button id="reloadCameraBtn" type="button">🔄 Reiniciar cámara/marcador</button>
+        </div>
+        <p class="hint">Si mueves la cámara o el marcador físicamente (o si "Congelar posición" se quedó desincronizado), esto reinicia todo desde cero y vuelve a entrar en modo marcador automáticamente, con el mismo marcador/modelo que tenías.</p>
         <div class="row" id="displayScaleRow">
           <label for="displayScaleSlider">Escala</label>
           <input type="range" id="displayScaleSlider" min="0.001" max="1.5" step="0.001" value="1" />
@@ -1521,7 +1525,7 @@
       function updateBackClipPlane() {
         if (!modelBoxLocal) return;
         const range = modelBoxLocal.max[clipAxis] - modelBoxLocal.min[clipAxis];
-        const thickness = range * 0.04;
+        const thickness = range * 0.02; // grosor de la tapa - antes 0.04, se veia muy grueso
         backClipPlaneLocal.normal.copy(clipPlaneLocal.normal).negate();
         backClipPlaneLocal.constant = thickness - clipPlaneLocal.constant;
       }
@@ -1673,6 +1677,14 @@
 
       function refreshModelBindings(keepSliderValue = true) {
         if (!loadedModel) return;
+        // Quitar la tapa/alambrico de la vez anterior ANTES de medir: si no,
+        // esa geometria vieja (todavia colgando de loadedModel hasta que
+        // rebuildCapSliceMeshes/rebuildWireMeshes la reconstruyan mas abajo)
+        // se cuela en "visibleMeshes" y contamina modelBoxLocal - la causa
+        // real de que la tapa de Seccion saliera de tamano distinto segun
+        // cuantas veces se hubiera tocado la Escala antes.
+        clearGroup(capSliceGroup);
+        clearGroup(wireGroup);
         const { visibleMeshes, cutterMeshes } = splitVisibleAndCutterMeshes(loadedModel);
         if (!visibleMeshes.length) return;
 
@@ -2631,6 +2643,17 @@
         refreshModelBindings(true);
       });
 
+      // Reutiliza el mismo mecanismo de guardado+recarga+reentrada
+      // automatica que ya usa el cambio de marcador con la camara activa
+      // (ver savePendingResume/tryAutoResume): pensado para cuando has
+      // movido la camara o el marcador fisicamente y quieres volver a
+      // engancharlo desde cero, sin tener que pasar por la portada ni
+      // volver a elegir archivos.
+      document.getElementById('reloadCameraBtn').addEventListener('click', () => {
+        logDebug('Reinicio manual de cámara/marcador solicitado...', 'pending');
+        savePendingResume('marker').then(() => location.reload());
+      });
+
       // Cambiar de modelo SIN reiniciar la camara/marcador: el target no
       // cambia, solo se recarga y recalibra el modelo contra el mismo
       // "_marker_ref". A diferencia del modo Suelo, aqui NO hace falta
@@ -3385,7 +3408,7 @@
       function updateBackClipPlane() {
         if (!modelBoxLocal) return;
         const range = modelBoxLocal.max[clipAxis] - modelBoxLocal.min[clipAxis];
-        const thickness = range * 0.04;
+        const thickness = range * 0.02; // grosor de la tapa - antes 0.04, se veia muy grueso
         backClipPlaneLocal.normal.copy(clipPlaneLocal.normal).negate();
         backClipPlaneLocal.constant = thickness - clipPlaneLocal.constant;
       }
@@ -3600,6 +3623,11 @@
 
       function refreshFloorBindings() {
         if (!loadedModel) return;
+        // Ver nota identica en refreshModelBindings (modo marcador): hay que
+        // quitar la tapa/alambrico de la vez anterior ANTES de medir la caja,
+        // o esa geometria vieja contamina modelBoxLocal.
+        if (capSliceGroup && capSliceGroup.parent) capSliceGroup.parent.remove(capSliceGroup);
+        if (wireGroup && wireGroup.parent) wireGroup.parent.remove(wireGroup);
         const { visibleMeshes, cutterMeshes } = splitVisibleAndCutterMeshes(loadedModel);
         cutterMeshes.forEach((m) => { m.visible = false; m.frustumCulled = false; });
         currentVisibleMeshes = visibleMeshes;
