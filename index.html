@@ -329,6 +329,10 @@
           <input type="range" id="stabilitySlider" min="1" max="10" step="1" value="5" />
           <span id="stabilityVal">5</span>
         </div>
+        <div class="row" id="freezePositionRow">
+          <label><input type="checkbox" id="freezePositionChk" /> 🔒 Congelar posición</label>
+        </div>
+        <p class="hint">Para cámara y marcador fijos (ej. webcam en PC sobre un plano en la mesa): fija el modelo en su sitio actual e ignora el temblor del tracking en vivo. Si mueves la cámara o el marcador después de activarlo, el modelo NO les seguirá — desactívalo para eso.</p>
         <div class="row" id="displayScaleRow">
           <label for="displayScaleSlider">Escala</label>
           <input type="range" id="displayScaleSlider" min="0.001" max="1.5" step="0.001" value="1" />
@@ -2142,6 +2146,34 @@
         });
       });
 
+      // Congelar posicion: pensado para camara+marcador fijos (webcam de
+      // PC sobre un plano en la mesa) - ahi el temblor no viene de que el
+      // marcador o la camara se muevan de verdad, sino de que MindAR
+      // recalcula su pose CADA frame incluso estando ambos quietos, y cada
+      // calculo tiene su propio ruidito. Fijar la matriz local del ancla
+      // (no leerla mas de MindAR mientras este activo) elimina ese ruido
+      // de raiz para este caso concreto. No afecta a rotar/escalar/mover/
+      // seccionar el modelo: eso vive en "loadedModel", un hijo del ancla
+      // con transformacion propia independiente.
+      let anchorFrozen = false;
+      const frozenAnchorMatrix = new THREE.Matrix4();
+      const freezePositionChk = document.getElementById('freezePositionChk');
+      freezePositionChk.addEventListener('change', () => {
+        anchorFrozen = freezePositionChk.checked;
+        if (anchorFrozen) {
+          frozenAnchorMatrix.copy(anchor.group.matrix);
+          // matrixAutoUpdate=false evita que three.js regenere ".matrix" a
+          // partir de position/quaternion/scale (que es por donde algunas
+          // versiones de MindAR aplican su actualizacion) - sin esto, nuestra
+          // copia de abajo se pisaria en el mismo frame en el que se hace.
+          anchor.group.matrixAutoUpdate = false;
+          logDebug('Posición del ancla congelada.', 'ok');
+        } else {
+          anchor.group.matrixAutoUpdate = true;
+          logDebug('Posición del ancla en vivo de nuevo.', 'ok');
+        }
+      });
+
       // Multiplicador de exhibicion sobre la escala/posicion "real" que dejo
       // la calibracion (_marker_ref u otra). Sirve para modelos calibrados a
       // tamano real que sean fisicamente demasiado grandes para caber en el
@@ -2832,6 +2864,12 @@
             animScrub.value = t.toFixed(4);
             animTime.textContent = t.toFixed(1) + 's';
           }
+        }
+        if (anchorFrozen) {
+          // Reimponer la matriz congelada por si MindAR (u otra parte de
+          // three.js) la ha tocado este frame - ver freezePositionChk.
+          anchor.group.matrix.copy(frozenAnchorMatrix);
+          anchor.group.visible = true; // no ocultarlo aunque el tracking diga "perdido"
         }
         // anchor.group.updateMatrixWorld(true) recorre TODO el subarbol,
         // loadedModel incluido - por eso loadedModel.matrixWorld de abajo
