@@ -1524,8 +1524,14 @@
 
       function updateBackClipPlane() {
         if (!modelBoxLocal) return;
-        const range = modelBoxLocal.max[clipAxis] - modelBoxLocal.min[clipAxis];
-        const thickness = range * 0.02; // grosor de la tapa - antes 0.04, se veia muy grueso
+        // Grosor respecto al tamaño GLOBAL del modelo (la dimension mayor de
+        // las 3), NO al rango del eje de corte actual - si no, Planta/
+        // Alzado/Perfil salian con grosores distintos entre si cuando el
+        // modelo no mide igual en sus tres dimensiones (ej. un edificio alto
+        // y estrecho en planta).
+        const size = modelBoxLocal.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z);
+        const thickness = maxDim * 0.01; // antes 0.04, luego 0.02 - se seguia viendo grueso
         backClipPlaneLocal.normal.copy(clipPlaneLocal.normal).negate();
         backClipPlaneLocal.constant = thickness - clipPlaneLocal.constant;
       }
@@ -2167,6 +2173,17 @@
       // de raiz para este caso concreto. No afecta a rotar/escalar/mover/
       // seccionar el modelo: eso vive en "loadedModel", un hijo del ancla
       // con transformacion propia independiente.
+      //
+      // IMPORTANTE: NO tocar anchor.group.matrixAutoUpdate. MindAR ya lo
+      // deja en false por su cuenta (escribe ".matrix" directamente cada
+      // frame, no via position/quaternion/scale) - forzarlo a "true" al
+      // descongelar hacia que three.js recalculase ".matrix" a partir de
+      // position/quaternion/scale, que MindAR NUNCA toca, dejando el ancla
+      // en una transformacion inventada (por eso el modelo desaparecia al
+      // descongelar). Con solo copiar ".matrix" cada frame mientras esta
+      // congelado (ver bucle de render) basta: al descongelar, dejar de
+      // copiar es suficiente para que las escrituras en vivo de MindAR
+      // vuelvan a verse sin mas.
       let anchorFrozen = false;
       const frozenAnchorMatrix = new THREE.Matrix4();
       const freezePositionChk = document.getElementById('freezePositionChk');
@@ -2174,14 +2191,8 @@
         anchorFrozen = freezePositionChk.checked;
         if (anchorFrozen) {
           frozenAnchorMatrix.copy(anchor.group.matrix);
-          // matrixAutoUpdate=false evita que three.js regenere ".matrix" a
-          // partir de position/quaternion/scale (que es por donde algunas
-          // versiones de MindAR aplican su actualizacion) - sin esto, nuestra
-          // copia de abajo se pisaria en el mismo frame en el que se hace.
-          anchor.group.matrixAutoUpdate = false;
           logDebug('Posición del ancla congelada.', 'ok');
         } else {
-          anchor.group.matrixAutoUpdate = true;
           logDebug('Posición del ancla en vivo de nuevo.', 'ok');
         }
       });
@@ -2693,6 +2704,17 @@
         clearGroup(wireGroup);
         wireGroup = null;
         wireMeshes = [];
+        // Escala y Seccion tampoco se heredan de un modelo a otro: cada
+        // modelo nuevo parte calibrado a 100% y sin corte, no con el zoom o
+        // la posicion de corte que se hubiera dejado en el anterior.
+        displayScaleSlider.value = 1;
+        displayScaleVal.textContent = '100%';
+        clipEnabled = false;
+        clipEnabledChk.checked = false;
+        clipAxis = 'z';
+        flipSide.x = false; flipSide.y = false; flipSide.z = false;
+        clipSlider.value = 0;
+        setActiveAxisButton();
         // shadowPlaneMeshes cuelgan directo de anchor.group (setupShadowPlanes
         // los reparenta con attach()), no de loadedModel — hay que quitarlos
         // aparte o el "_shadow" del modelo anterior se queda flotando.
@@ -3407,8 +3429,14 @@
 
       function updateBackClipPlane() {
         if (!modelBoxLocal) return;
-        const range = modelBoxLocal.max[clipAxis] - modelBoxLocal.min[clipAxis];
-        const thickness = range * 0.02; // grosor de la tapa - antes 0.04, se veia muy grueso
+        // Grosor respecto al tamaño GLOBAL del modelo (la dimension mayor de
+        // las 3), NO al rango del eje de corte actual - si no, Planta/
+        // Alzado/Perfil salian con grosores distintos entre si cuando el
+        // modelo no mide igual en sus tres dimensiones (ej. un edificio alto
+        // y estrecho en planta).
+        const size = modelBoxLocal.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z);
+        const thickness = maxDim * 0.01; // antes 0.04, luego 0.02 - se seguia viendo grueso
         backClipPlaneLocal.normal.copy(clipPlaneLocal.normal).negate();
         backClipPlaneLocal.constant = thickness - clipPlaneLocal.constant;
       }
@@ -3862,6 +3890,16 @@
         if (capSliceGroup && capSliceGroup.parent) capSliceGroup.parent.remove(capSliceGroup);
         capSliceGroup = null;
         capSliceMeshes = [];
+        // Escala y Seccion tampoco se heredan de un modelo a otro - ver nota
+        // identica en el resetModelState de modo marcador.
+        displayScaleSlider.value = 1;
+        displayScaleVal.textContent = '100%';
+        clipEnabled = false;
+        clipEnabledChk.checked = false;
+        clipAxis = 'z';
+        flipSide.x = false; flipSide.y = false; flipSide.z = false;
+        clipSlider.value = 0;
+        setActiveAxisButton();
         // shadowPlaneMeshes cuelgan directo de placementRoot (setupShadowPlanes
         // los reparenta con attach()), no de loadedModel - hay que quitarlos
         // aparte o el "_shadow" del modelo anterior se queda flotando.
