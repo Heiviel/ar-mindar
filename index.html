@@ -345,9 +345,6 @@
           <label for="markerRealWidthInput" title="Ancho real (en metros) del soporte impreso del marcador, sea cual sea su tamaño o formato. Se combina con un objeto &quot;_marker_scale_N&quot; del modelo (N = veces que el modelo real es más grande que el marcador) para calcular la escala real en AR.">📐 Ancho real marcador (m)</label>
           <input type="number" id="markerRealWidthInput" min="0.01" step="0.01" value="0.3" style="width:70px" />
         </div>
-        <div class="row" id="verticalMarkerRow">
-          <label><input type="checkbox" id="verticalMarkerChk" title="Actívalo si el marcador impreso esta de pie/vertical (ej. pegado a una caja o pared) en vez de tumbado en la mesa. Corrige la orientacion para que el modelo (exportado Z-up normal) se vea apoyado en el plano horizontal, sin tocar la exportacion de Blender." /> 🧱 Marcador en vertical</label>
-        </div>
         <div class="row" id="displayScaleRow">
           <label for="displayScaleSlider">Escala</label>
           <input type="range" id="displayScaleSlider" min="0.001" max="1.5" step="0.001" value="1" />
@@ -655,11 +652,11 @@
       assetPickedName.textContent = parts.length ? `Usando ${parts.join(', ')}` : '';
     }
 
-    // "Marcador vertical" de la portada: mismo localStorage que el
-    // checkbox del panel Visualizacion (ver verticalMarkerChk), asi el
-    // valor se comparte independientemente de por donde se toque. Se
-    // guarda en cuanto cambia (no hace falta esperar a "Aplicar cambios")
-    // porque no reinicia nada por si solo.
+    // "Marcador vertical": unico control para esto (ver
+    // applyVerticalMarkerCorrection, panel Visualizacion). Se guarda en
+    // localStorage en cuanto cambia (no hace falta esperar a "Aplicar
+    // cambios") porque no reinicia nada por si solo - el reinicio real
+    // solo hace falta al cambiar el propio archivo del marcador.
     targetVerticalChk.checked = localStorage.getItem('arMindarVerticalMarker') === '1';
     targetVerticalChk.addEventListener('change', () => {
       localStorage.setItem('arMindarVerticalMarker', targetVerticalChk.checked ? '1' : '0');
@@ -1158,17 +1155,19 @@
       // giro en vivo (raton, gesto) SOLO tocan .rotation.z, y Seccion
       // trabaja en espacio local del modelo (ajeno a su rotacion como
       // objeto), asi que nada de eso se ve afectado por este giro base.
-      const verticalMarkerChk = document.getElementById('verticalMarkerChk');
-      verticalMarkerChk.checked = localStorage.getItem('arMindarVerticalMarker') === '1';
+      //
+      // Unica fuente de este dato: el checkbox "targetVerticalChk" de la
+      // portada (panel "Modelo y marcador"), guardado en localStorage. Se
+      // quito el checkbox equivalente de este panel (Visualizacion) para
+      // no tener dos controles distintos para lo mismo - cambiar el
+      // marcador de vertical a tumbado (o al reves) requiere de todos
+      // modos "Aplicar cambios" (reinicio), asi que no hacia falta poder
+      // tocarlo aqui en caliente.
       function applyVerticalMarkerCorrection() {
         if (!loadedModel) return;
-        loadedModel.rotation.x = verticalMarkerChk.checked ? -Math.PI / 2 : 0;
+        loadedModel.rotation.x = localStorage.getItem('arMindarVerticalMarker') === '1' ? -Math.PI / 2 : 0;
         loadedModel.updateMatrix();
       }
-      verticalMarkerChk.addEventListener('change', () => {
-        localStorage.setItem('arMindarVerticalMarker', verticalMarkerChk.checked ? '1' : '0');
-        applyVerticalMarkerCorrection();
-      });
       // Guarda center/ratio de "_marker_scale_N" del modelo actual (o null
       // si usa "_marker_ref"/autoencuadre) para poder recalcular la
       // calibracion si el usuario corrige el ancho real del soporte
