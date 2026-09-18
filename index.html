@@ -276,11 +276,17 @@
           <input type="file" id="targetFileInput" accept=".mind" />
         </div>
         <div class="row">
+          <label><input type="checkbox" id="targetVerticalChk" /> 🧱 Marcador vertical (no tumbado)</label>
+        </div>
+        <div class="row">
           <label for="modelFileInput">Modelo (.glb)</label>
           <input type="file" id="modelFileInput" accept=".glb" />
         </div>
-        <p class="hint">Sin elegir nada se usa el marcador/modelo por defecto (bola). Elige archivos ANTES de pulsar "Iniciar cámara AR".</p>
+        <p class="hint">Sin elegir nada se usa el marcador/modelo por defecto (bola). Elige archivos (y marca si el marcador es vertical) y luego pulsa "Iniciar cámara AR" — o, si la cámara ya está en marcha, "Aplicar cambios".</p>
         <p class="pickedName" id="assetPickedName" hidden></p>
+        <div class="row" id="applyAssetChangesRow" hidden>
+          <button id="applyAssetChangesBtn" type="button">✔ Aplicar cambios</button>
+        </div>
         <hr />
         <div class="row">
           <label for="linkExpirySelect">Validez del link</label>
@@ -616,7 +622,10 @@
     // los archivos).
     // ---------------------------------------------------------------
     const targetFileInput = document.getElementById('targetFileInput');
+    const targetVerticalChk = document.getElementById('targetVerticalChk');
     const modelFileInput = document.getElementById('modelFileInput');
+    const applyAssetChangesRow = document.getElementById('applyAssetChangesRow');
+    const applyAssetChangesBtn = document.getElementById('applyAssetChangesBtn');
     const assetPanel = document.getElementById('assetPanel');
     const assetPickedName = document.getElementById('assetPickedName');
     const linkExpirySelect = document.getElementById('linkExpirySelect');
@@ -646,21 +655,31 @@
       assetPickedName.textContent = parts.length ? `Usando ${parts.join(', ')}` : '';
     }
 
+    // "Marcador vertical" de la portada: mismo localStorage que el
+    // checkbox del panel Visualizacion (ver verticalMarkerChk), asi el
+    // valor se comparte independientemente de por donde se toque. Se
+    // guarda en cuanto cambia (no hace falta esperar a "Aplicar cambios")
+    // porque no reinicia nada por si solo.
+    targetVerticalChk.checked = localStorage.getItem('arMindarVerticalMarker') === '1';
+    targetVerticalChk.addEventListener('change', () => {
+      localStorage.setItem('arMindarVerticalMarker', targetVerticalChk.checked ? '1' : '0');
+    });
+
     targetFileInput.addEventListener('change', () => {
       const file = targetFileInput.files?.[0];
       if (!file) return;
       pickedTargetFile = file;
       resolvedTargetSrc = URL.createObjectURL(file);
       updatePickedNameHint();
-      // MindAR fija el marcador al crear el controller una sola vez: con
-      // la camara ya activa, cambiar el archivo aqui antes no hacia nada
-      // (seguia rastreando el marcador viejo, en silencio). Se fuerza un
-      // reinicio real de la pagina, guardando antes el marcador+modelo
-      // actuales para volver a entrar en modo marcador automaticamente
-      // (ver savePendingResume/tryAutoResume) sin pasar por la portada.
+      // MindAR fija el marcador al crear el controller una sola vez, asi
+      // que con la camara ya activa esto NO se aplica solo con elegir el
+      // archivo - hace falta el reinicio real que dispara "Aplicar
+      // cambios" (ver mas abajo). Antes se reiniciaba aqui mismo, en
+      // cuanto se elegia el marcador, lanzando ya la camara con el
+      // modelo viejo si tambien se queria cambiar el modelo - con el
+      // boton se puede cambiar uno, otro o los dos antes de aplicar.
       if (markerModeActive) {
-        logDebug('Marcador cambiado con la cámara activa: MindAR no soporta esto en caliente, reiniciando...', 'pending');
-        savePendingResume('marker').then(() => location.reload());
+        logDebug('Marcador elegido. Pulsa "Aplicar cambios" cuando termines (puedes cambiar tambien el modelo antes).', 'pending');
       }
     });
     modelFileInput.addEventListener('change', () => {
@@ -668,7 +687,21 @@
       if (!file) return;
       pickedModelFile = file;
       resolvedModelSrc = URL.createObjectURL(file);
+      if (markerModeActive) {
+        logDebug('Modelo elegido. Pulsa "Aplicar cambios" cuando termines (puedes cambiar tambien el marcador antes).', 'pending');
+      }
       updatePickedNameHint();
+    });
+
+    // Aplica marcador y/o modelo elegidos (uno, otro o los dos) de una
+    // sola vez, con la camara ya activa. MindAR fija el marcador al
+    // crear el controller, asi que la unica forma fiable de cambiarlo es
+    // un reinicio real de la pagina - se guarda el estado pendiente
+    // (savePendingResume) para volver a entrar en modo marcador
+    // automaticamente con los archivos ya elegidos (ver tryAutoResume).
+    applyAssetChangesBtn.addEventListener('click', () => {
+      logDebug('Aplicando cambios de marcador/modelo: reiniciando...', 'pending');
+      savePendingResume('marker').then(() => location.reload());
     });
 
     // Guardado local (IndexedDB): unica forma de que un "link" pueda
@@ -931,6 +964,7 @@
     startBtn.addEventListener('click', async () => {
       document.getElementById('startChoice')?.remove();
       markerModeActive = true;
+      applyAssetChangesRow.hidden = false;
       clearPendingResume(); // limpieza normal: entrada nueva, no venimos de un reinicio a medias
       hint.hidden = false;
       logDebug('Iniciando camara AR...');
