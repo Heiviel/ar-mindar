@@ -455,6 +455,10 @@
           <label><input type="checkbox" id="diagnosticsChk" /> Mostrar diagnóstico en pantalla</label>
         </div>
         <p class="hint">Para depurar problemas de carga o de detección del marcador en un dispositivo concreto. No hace falta para uso normal — apagado por defecto.</p>
+        <div class="row">
+          <label><input type="checkbox" id="axesHelperChk" /> Ver ejes del marcador (X rojo, Y verde, Z azul)</label>
+        </div>
+        <p class="hint">Temporal, para averiguar qué eje del marcador coincide con la vertical real cuando el marcador no está tumbado en la mesa.</p>
       </div>
     </section>
     </div>
@@ -996,6 +1000,19 @@
       scene.add(light);
 
       const anchor = mindarThree.addAnchor(0);
+
+      // Ayuda de diagnostico TEMPORAL: ejes reales del ancla (X rojo, Y
+      // verde, Z azul, tamano = medio ancho de marcador) para averiguar a
+      // simple vista, con la camara real, que eje coincide con la
+      // vertical real cuando el marcador no esta tumbado en la mesa. Ver
+      // checkbox "axesHelperChk" en el panel Diagnostico.
+      const anchorAxesHelper = new THREE.AxesHelper(0.5);
+      anchorAxesHelper.visible = false;
+      anchor.group.add(anchorAxesHelper);
+      document.getElementById('axesHelperChk').addEventListener('change', (e) => {
+        anchorAxesHelper.visible = e.target.checked;
+      });
+
       setStatus('marker', 'Marcador: buscando...', 'pending');
       anchor.onTargetFound = () => {
         logDebug('Target ENCONTRADO', 'ok');
