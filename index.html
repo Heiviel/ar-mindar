@@ -2425,23 +2425,24 @@
       });
       window.addEventListener('mouseup', () => { isDraggingModel = false; });
 
-      // Paneo con boton derecho del raton: mismo par de ejes (X/Z) y mismo
-      // signo que el gesto de mano "mover" (ver PAN_GAIN mas abajo), asi
-      // los dos metodos de entrada se comportan igual. Se suma a
-      // userOffset, no lo sustituye, para no pisar el offset que hubiera
-      // dejado el gesto de mano.
+      // Paneo con el boton central (rueda) del raton: mismo par de ejes
+      // (X/Z) y mismo signo que el gesto de mano "mover" (ver PAN_GAIN mas
+      // abajo), asi los dos metodos de entrada se comportan igual. Se
+      // suma a userOffset, no lo sustituye, para no pisar el offset que
+      // hubiera dejado el gesto de mano.
+      // Con el boton derecho, el navegador dispara "contextmenu" DESPUES
+      // de "mouseup" (para entonces isPanningModel ya esta en false), asi
+      // que no hay forma fiable de suprimir el menu contextual al soltar
+      // - de ahi el cambio al boton central, que no tiene ese problema.
       let isPanningModel = false;
       let lastPanX = 0;
       let lastPanY = 0;
       const MOUSE_PAN_GAIN = 0.0025;
-      document.addEventListener('contextmenu', (e) => {
-        if (isPanningModel) e.preventDefault();
-      });
       document.addEventListener('mousedown', (e) => {
         if (!loadedModel) return;
         if (e.target.closest('#leftMenu')) return;
-        if (e.button !== 2) return; // boton derecho
-        e.preventDefault();
+        if (e.button !== 1) return; // boton central (rueda)
+        e.preventDefault(); // evita el autoscroll nativo del boton central
         isPanningModel = true;
         lastPanX = e.clientX;
         lastPanY = e.clientY;
