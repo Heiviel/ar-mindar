@@ -335,6 +335,10 @@
         <div class="row">
           <button id="reloadCameraBtn" type="button">🔄 Reiniciar cámara/marcador</button>
         </div>
+        <div class="row" id="markerScaleCalRow">
+          <label for="markerRealWidthInput" title="Ancho real (en metros) del soporte impreso del marcador, sea cual sea su tamaño o formato. Se combina con un objeto &quot;_marker_scale_N&quot; del modelo (N = veces que el modelo real es más grande que el marcador) para calcular la escala real en AR.">📐 Ancho real marcador (m)</label>
+          <input type="number" id="markerRealWidthInput" min="0.01" step="0.01" value="0.3" style="width:70px" />
+        </div>
         <div class="row" id="displayScaleRow">
           <label for="displayScaleSlider">Escala</label>
           <input type="range" id="displayScaleSlider" min="0.001" max="1.5" step="0.001" value="1" />
@@ -1063,6 +1067,36 @@
       function isMarkerRef(mesh) {
         return MARKER_REF_NAME_RE.test(mesh.name || '');
       }
+
+      // Alternativa a "_marker_ref" para modelos donde no es practico
+      // modelar una malla al tamano fisico real del marcador (ej. una
+      // ciudad entera): un Empty (sin geometria, cualquier tamano grafico
+      // en el viewport - no participa en el calculo) llamado
+      // "_marker_scale_N", donde N es la relacion de escala plano/real
+      // (como una escala de AutoCAD 1:N): el modelo real mide N veces el
+      // marcador fisico. Su POSICION si importa: marca el punto exacto
+      // donde debe "enganchar" el marcador, y puede estar fuera de la
+      // geometria (en el hueco vacio donde se quiera que aparezca el
+      // modelo, no necesariamente sobre el). El ancho real del soporte
+      // impreso (variable de una sesion a otra, no depende del modelo) se
+      // introduce aparte en "markerRealWidthInput".
+      const MARKER_SCALE_NAME_RE = /(^|_)marker_scale_([0-9]+(?:\.[0-9]+)?)(\.\d+)?$/i;
+      function getMarkerScaleRatio(obj) {
+        const m = MARKER_SCALE_NAME_RE.exec(obj.name || '');
+        return m ? parseFloat(m[2]) : null;
+      }
+      const markerRealWidthInput = document.getElementById('markerRealWidthInput');
+      const savedMarkerRealWidth = localStorage.getItem('arMindarMarkerRealWidth');
+      if (savedMarkerRealWidth) markerRealWidthInput.value = savedMarkerRealWidth;
+      function getMarkerRealWidth() {
+        const v = parseFloat(markerRealWidthInput.value);
+        return v > 0 ? v : 0.3;
+      }
+      // Guarda center/ratio de "_marker_scale_N" del modelo actual (o null
+      // si usa "_marker_ref"/autoencuadre) para poder recalcular la
+      // calibracion si el usuario corrige el ancho real del soporte
+      // despues de cargar el modelo, sin tener que recargarlo entero.
+      let markerScaleCalibration = null;
 
       let clipAxis = 'z';
       let clipEnabled = false;
@@ -2040,14 +2074,56 @@
         );
       }
 
+      // Aplica (o reaplica) la calibracion de "_marker_scale_N" usando el
+      // ancho real del soporte impreso vigente en ese momento. Separada de
+      // applyMarkerRefCalibration para poder llamarla de nuevo cuando el
+      // usuario corrige ese ancho sin recargar el modelo.
+      function applyMarkerScaleDisplayCalibration(model) {
+        if (!markerScaleCalibration) return false;
+        const { center, ratio } = markerScaleCalibration;
+        const refWidth = getMarkerRealWidth() * ratio;
+        if (!(refWidth > 0)) {
+          logDebug('Ancho real del marcador invalido; se ignora "_marker_scale_N".', 'error');
+          return false;
+        }
+        displayScale = 1 / refWidth;
+        model.scale.setScalar(displayScale);
+        model.position.copy(center).multiplyScalar(-displayScale);
+        model.updateMatrix();
+        logDebug(
+          `Calibrado con "_marker_scale_${ratio}": soporte=${getMarkerRealWidth().toFixed(3)}m -> ` +
+          `ancho real=${refWidth.toFixed(2)}m -> escala=${displayScale.toFixed(6)}`, 'ok'
+        );
+        return true;
+      }
+
       function applyMarkerRefCalibration(model) {
+        markerScaleCalibration = null;
+        let scaleRef = null;
+        let scaleRatio = null;
+        model.traverse((child) => {
+          if (!scaleRef) {
+            const ratio = getMarkerScaleRatio(child);
+            if (ratio && ratio > 0) { scaleRef = child; scaleRatio = ratio; }
+          }
+        });
+        if (scaleRef) {
+          markerScaleCalibration = {
+            center: new THREE.Vector3().setFromMatrixPosition(scaleRef.matrixWorld),
+            ratio: scaleRatio,
+          };
+          applyMarkerScaleDisplayCalibration(model);
+          scaleRef.parent.remove(scaleRef);
+          return;
+        }
+
         let found = null;
         model.traverse((child) => {
           if (!found && child.isMesh && isMarkerRef(child)) found = child;
         });
 
         if (!found) {
-          logDebug('Sin "_marker_ref": se respeta la escala/posicion tal cual viene del GLB.');
+          logDebug('Sin "_marker_scale_N" ni "_marker_ref": se respeta la escala/posicion tal cual viene del GLB.');
           return;
         }
 
@@ -2220,6 +2296,19 @@
         applyDisplayScaleMultiplier(k);
       });
       displayScaleSlider.addEventListener('change', () => {
+        refreshModelBindings(true);
+      });
+
+      // Corregir el ancho real del soporte impreso recalibra al vuelo el
+      // modelo actual (si se cargo via "_marker_scale_N"), sin recargarlo:
+      // util cuando uno se da cuenta de que midio mal o cambia de soporte.
+      markerRealWidthInput.addEventListener('change', () => {
+        localStorage.setItem('arMindarMarkerRealWidth', markerRealWidthInput.value);
+        if (!loadedModel || !markerScaleCalibration) return;
+        if (!applyMarkerScaleDisplayCalibration(loadedModel)) return;
+        baseModelScale = loadedModel.scale.x;
+        baseModelPosition.copy(loadedModel.position);
+        applyDisplayScaleMultiplier(parseFloat(displayScaleSlider.value));
         refreshModelBindings(true);
       });
 
