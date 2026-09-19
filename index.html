@@ -1170,12 +1170,16 @@
       // giros (correccion vertical, raton, mano) deben hacerse alrededor
       // de este punto - ver rotateAboutAttach.
       const markerAttachLocal = new THREE.Vector3();
-      function rotateAboutAttach(mutateRotation) {
+      // Por defecto gira alrededor del punto de enganche (la correccion
+      // de marcador vertical debe conservar la calibracion); el giro del
+      // usuario (raton/mano) pasa el CENTRO del modelo como pivote para
+      // que la pieza gire sobre si misma.
+      function rotateAboutAttach(mutateRotation, pivot = markerAttachLocal) {
         if (!loadedModel) return;
         const s = loadedModel.scale.x;
-        const before = markerAttachLocal.clone().applyEuler(loadedModel.rotation).multiplyScalar(s);
+        const before = pivot.clone().applyEuler(loadedModel.rotation).multiplyScalar(s);
         mutateRotation();
-        const after = markerAttachLocal.clone().applyEuler(loadedModel.rotation).multiplyScalar(s);
+        const after = pivot.clone().applyEuler(loadedModel.rotation).multiplyScalar(s);
         loadedModel.position.add(before).sub(after);
         loadedModel.updateMatrix();
       }
@@ -2474,7 +2478,7 @@
         const dx = e.clientX - lastDragX;
         lastDragX = e.clientX;
         userRotZ += dx * 0.01;
-        rotateAboutAttach(() => { loadedModel.rotation.z = userRotZ; });
+        rotateAboutAttach(() => { loadedModel.rotation.z = userRotZ; }, modelCenterLocal || markerAttachLocal);
       });
       window.addEventListener('mouseup', () => { isDraggingModel = false; });
 
@@ -2506,7 +2510,14 @@
         const dy = e.clientY - lastPanY;
         lastPanX = e.clientX;
         lastPanY = e.clientY;
-        setUserOffset(userOffset.clone().add(new THREE.Vector3(-dx * MOUSE_PAN_GAIN, 0, -dy * MOUSE_PAN_GAIN)));
+        // Derecha del raton = derecha en pantalla. Con marcador vertical
+        // el eje Z del ancla sale hacia la camara: raton hacia delante
+        // (dy<0) = alejar el modelo (-Z). Con marcador tumbado Z es la
+        // vertical: raton hacia abajo baja el modelo.
+        const verticalMarker = localStorage.getItem('arMindarVerticalMarker') === '1';
+        setUserOffset(userOffset.clone().add(new THREE.Vector3(
+          dx * MOUSE_PAN_GAIN, 0, (verticalMarker ? dy : -dy) * MOUSE_PAN_GAIN
+        )));
       });
       window.addEventListener('mouseup', () => { isPanningModel = false; });
 
@@ -2737,7 +2748,7 @@
         if (activeGesture?.type === 'palm' && loadedModel) {
           const angle = palmRollAngle(lm);
           userRotZ = activeGesture.startRotZ + (angle - activeGesture.startAngle) * ROTATE_GAIN;
-          rotateAboutAttach(() => { loadedModel.rotation.z = userRotZ; });
+          rotateAboutAttach(() => { loadedModel.rotation.z = userRotZ; }, modelCenterLocal || markerAttachLocal);
 
           // Zoom acercando/alejando la mano de la camara: ratio del ancho
           // de palma actual/inicial por la escala inicial, misma logica de
