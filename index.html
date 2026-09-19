@@ -2360,11 +2360,29 @@
       // mas caro y no hace falta en cada frame de arrastre.
       const displayScaleSlider = document.getElementById('displayScaleSlider');
       const displayScaleVal = document.getElementById('displayScaleVal');
+      // Zoom (slider, rueda y gesto de mano): mantiene fijo el CENTRO
+      // geometrico del modelo (modelCenterLocal), asi crece/decrece "in
+      // situ" en vez de desplazarse hacia el punto de enganche. Es
+      // incremental: parte de la posicion/escala ACTUALES, de modo que
+      // convive con giro y paneo. Para volver a la base exacta, ver
+      // resetPositionBtn (fija posicion y escala explicitamente).
       function applyDisplayScaleMultiplier(k) {
         if (!loadedModel) return;
-        loadedModel.scale.setScalar(baseModelScale * k);
-        loadedModel.position.copy(baseModelPosition).multiplyScalar(k).add(userOffset);
+        const newScale = baseModelScale * k;
+        const oldScale = loadedModel.scale.x;
+        if (modelCenterLocal) {
+          const centerDir = modelCenterLocal.clone().applyEuler(loadedModel.rotation);
+          loadedModel.position.addScaledVector(centerDir, oldScale - newScale);
+        } else {
+          loadedModel.position.copy(baseModelPosition).multiplyScalar(k).add(userOffset);
+        }
+        loadedModel.scale.setScalar(newScale);
         loadedModel.updateMatrix();
+      }
+      function setUserOffset(next) {
+        if (loadedModel) loadedModel.position.add(next).sub(userOffset);
+        userOffset.copy(next);
+        if (loadedModel) loadedModel.updateMatrix();
       }
       displayScaleSlider.addEventListener('input', () => {
         const k = parseFloat(displayScaleSlider.value);
@@ -2386,6 +2404,7 @@
         if (!applyMarkerScaleDisplayCalibration(loadedModel)) return;
         baseModelScale = loadedModel.scale.x;
         baseModelPosition.copy(loadedModel.position);
+        loadedModel.position.add(userOffset);
         applyDisplayScaleMultiplier(parseFloat(displayScaleSlider.value));
         refreshModelBindings(true);
       });
@@ -2453,20 +2472,13 @@
         const dy = e.clientY - lastPanY;
         lastPanX = e.clientX;
         lastPanY = e.clientY;
-        userOffset.x -= dx * MOUSE_PAN_GAIN;
-        userOffset.z -= dy * MOUSE_PAN_GAIN;
-        applyDisplayScaleMultiplier(parseFloat(displayScaleSlider.value));
+        setUserOffset(userOffset.clone().add(new THREE.Vector3(-dx * MOUSE_PAN_GAIN, 0, -dy * MOUSE_PAN_GAIN)));
       });
       window.addEventListener('mouseup', () => { isPanningModel = false; });
 
-      // Zoom con la rueda del raton: a diferencia del slider "Escala"
-      // (que mantiene fijo el punto de calibracion/enganche al marcador,
-      // pensado para no perder esa referencia), la rueda mantiene fijo el
-      // CENTRO GEOMETRICO del modelo (modelCenterLocal) - crece/decrece
-      // "in situ" sobre lo que se este viendo en pantalla en ese momento,
-      // que es lo esperable en un zoom interactivo. Ambos controles
-      // actualizan el mismo displayScaleSlider para que se vean
-      // sincronizados pase lo que pase.
+      // Zoom con la rueda del raton: misma logica que el slider (ver
+      // applyDisplayScaleMultiplier) y actualiza el mismo slider para que
+      // se vean sincronizados.
       let wheelSettleTimer = null;
       document.addEventListener('wheel', (e) => {
         if (!loadedModel) return;
@@ -2478,21 +2490,7 @@
         const k = Math.min(max, Math.max(min, parseFloat(displayScaleSlider.value) * factor));
         displayScaleSlider.value = k;
         displayScaleVal.textContent = k * 100 < 1 ? `${(k * 100).toFixed(2)}%` : `${Math.round(k * 100)}%`;
-        const newScale = baseModelScale * k;
-        if (modelCenterLocal) {
-          const centerNow = modelCenterLocal.clone()
-            .applyEuler(loadedModel.rotation)
-            .multiplyScalar(loadedModel.scale.x)
-            .add(loadedModel.position);
-          const centerOffsetAtNewScale = modelCenterLocal.clone()
-            .applyEuler(loadedModel.rotation)
-            .multiplyScalar(newScale);
-          loadedModel.position.copy(centerNow).sub(centerOffsetAtNewScale);
-        } else {
-          loadedModel.position.copy(baseModelPosition).multiplyScalar(k).add(userOffset);
-        }
-        loadedModel.scale.setScalar(newScale);
-        loadedModel.updateMatrix();
+        applyDisplayScaleMultiplier(k);
         clearTimeout(wheelSettleTimer);
         wheelSettleTimer = setTimeout(() => refreshModelBindings(true), 200);
       }, { passive: false });
@@ -2725,12 +2723,11 @@
           // Espejo horizontal (vista previa en espejo, mas intuitivo). El
           // desplazamiento vertical de la mano mueve el eje Z, que es el
           // "arriba" de este modo (ver nota de userRotZ mas arriba).
-          userOffset.set(
+          setUserOffset(new THREE.Vector3(
             activeGesture.startOffset.x - (x - activeGesture.startX) * PAN_GAIN,
             activeGesture.startOffset.y,
             activeGesture.startOffset.z - (y - activeGesture.startY) * PAN_GAIN,
-          );
-          applyDisplayScaleMultiplier(parseFloat(displayScaleSlider.value));
+          ));
         } else if (activeGesture?.type === 'section') {
           // Activar Seccion sola si el usuario hace el gesto dedicado: sin
           // esto el gesto no tendria ningun efecto visible la primera vez.
@@ -2888,7 +2885,9 @@
         loadedModel.rotation.z = 0;
         displayScaleSlider.value = 1;
         displayScaleVal.textContent = '100%';
-        applyDisplayScaleMultiplier(1);
+        loadedModel.position.copy(baseModelPosition);
+        loadedModel.scale.setScalar(baseModelScale);
+        loadedModel.updateMatrix();
         refreshModelBindings(true);
       });
 
