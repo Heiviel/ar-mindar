@@ -1163,10 +1163,27 @@
       // marcador de vertical a tumbado (o al reves) requiere de todos
       // modos "Aplicar cambios" (reinicio), asi que no hacia falta poder
       // tocarlo aqui en caliente.
+      // Punto del modelo (en su espacio local) que debe coincidir con el
+      // centro del marcador: el "_marker_scale_N"/"_marker_ref". Con un
+      // modelo a 1:1 esta lejisimos del origen del modelo, asi que
+      // cualquier giro alrededor del ORIGEN lo desplaza kilometros: los
+      // giros (correccion vertical, raton, mano) deben hacerse alrededor
+      // de este punto - ver rotateAboutAttach.
+      const markerAttachLocal = new THREE.Vector3();
+      function rotateAboutAttach(mutateRotation) {
+        if (!loadedModel) return;
+        const s = loadedModel.scale.x;
+        const before = markerAttachLocal.clone().applyEuler(loadedModel.rotation).multiplyScalar(s);
+        mutateRotation();
+        const after = markerAttachLocal.clone().applyEuler(loadedModel.rotation).multiplyScalar(s);
+        loadedModel.position.add(before).sub(after);
+        loadedModel.updateMatrix();
+      }
       function applyVerticalMarkerCorrection() {
         if (!loadedModel) return;
-        loadedModel.rotation.x = localStorage.getItem('arMindarVerticalMarker') === '1' ? -Math.PI / 2 : 0;
-        loadedModel.updateMatrix();
+        rotateAboutAttach(() => {
+          loadedModel.rotation.x = localStorage.getItem('arMindarVerticalMarker') === '1' ? -Math.PI / 2 : 0;
+        });
       }
       // Guarda center/ratio de "_marker_scale_N" del modelo actual (o null
       // si usa "_marker_ref"/autoencuadre) para poder recalcular la
@@ -2144,6 +2161,7 @@
         const maxDim = Math.max(size.x, size.y, size.z);
         displayScale = maxDim > 0 ? AUTO_FIT_SIZE / maxDim : 1;
         model.scale.setScalar(displayScale);
+        markerAttachLocal.copy(center);
         model.position.copy(center).multiplyScalar(-displayScale);
         model.updateMatrix();
         logDebug(
@@ -2166,7 +2184,8 @@
         }
         displayScale = 1 / refWidth;
         model.scale.setScalar(displayScale);
-        model.position.copy(center).multiplyScalar(-displayScale);
+        markerAttachLocal.copy(center);
+        model.position.copy(center).applyEuler(model.rotation).multiplyScalar(-displayScale);
         model.updateMatrix();
         logDebug(
           `Calibrado con "_marker_scale_${ratio}": soporte=${getMarkerRealWidth().toFixed(3)}m -> ` +
@@ -2177,6 +2196,7 @@
 
       function applyMarkerRefCalibration(model) {
         markerScaleCalibration = null;
+        markerAttachLocal.set(0, 0, 0);
         let scaleRef = null;
         let scaleRatio = null;
         model.traverse((child) => {
@@ -2229,7 +2249,8 @@
         } else {
           displayScale = 1 / refWidth;
           model.scale.setScalar(displayScale);
-          model.position.copy(center).multiplyScalar(-displayScale);
+          markerAttachLocal.copy(center);
+          model.position.copy(center).applyEuler(model.rotation).multiplyScalar(-displayScale);
           model.updateMatrix();
           logDebug(`Calibrado con "_marker_ref": ancho=${refWidth.toFixed(4)} -> escala=${displayScale.toFixed(4)}`, 'ok');
         }
@@ -2440,7 +2461,7 @@
         const dx = e.clientX - lastDragX;
         lastDragX = e.clientX;
         userRotZ += dx * 0.01;
-        loadedModel.rotation.z = userRotZ;
+        rotateAboutAttach(() => { loadedModel.rotation.z = userRotZ; });
       });
       window.addEventListener('mouseup', () => { isDraggingModel = false; });
 
@@ -2703,7 +2724,7 @@
         if (activeGesture?.type === 'palm' && loadedModel) {
           const angle = palmRollAngle(lm);
           userRotZ = activeGesture.startRotZ + (angle - activeGesture.startAngle) * ROTATE_GAIN;
-          loadedModel.rotation.z = userRotZ;
+          rotateAboutAttach(() => { loadedModel.rotation.z = userRotZ; });
 
           // Zoom acercando/alejando la mano de la camara: ratio del ancho
           // de palma actual/inicial por la escala inicial, misma logica de
