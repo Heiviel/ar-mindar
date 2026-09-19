@@ -1101,7 +1101,7 @@
       // cuando hay nombres duplicados. Sigue siendo una regla de sufijo, no
       // un "includes" suelto, asi que no da falsos positivos con
       // "shadow_catcher_off" o similares.
-      const SHADOW_NAME_RE = /(^|_)shadow(\.\d+)?$/i;
+      const SHADOW_NAME_RE = /(^|_)shadow\.?\d*$/i;
       function isShadowPlane(mesh) {
         return SHADOW_NAME_RE.test(mesh.name || '');
       }
@@ -1114,7 +1114,7 @@
       // ese marcador. Se lee una sola vez al cargar el GLB y luego se
       // elimina de la escena. Sin el, se respeta la escala/posicion tal
       // cual viene del GLB (ver applyMarkerRefCalibration).
-      const MARKER_REF_NAME_RE = /(^|_)marker_ref(\.\d+)?$/i;
+      const MARKER_REF_NAME_RE = /(^|_)marker_ref\.?\d*$/i;
       function isMarkerRef(mesh) {
         return MARKER_REF_NAME_RE.test(mesh.name || '');
       }
@@ -2222,6 +2222,19 @@
 
         if (!found) {
           logDebug('Sin "_marker_scale_N" ni "_marker_ref": se respeta la escala/posicion tal cual viene del GLB.');
+          // Pista: three.js quita los puntos de los nombres al cargar el
+          // GLB ("_marker_ref.001" llega como "_marker_ref001"), asi que
+          // conviene ver que nombres llegan de verdad.
+          const hints = [];
+          model.traverse((c) => {
+            if (c !== model && /marker|ref|scale|georgia/i.test(c.name || '')) hints.push(`${c.name}${c.isMesh ? ' (malla)' : ''}`);
+          });
+          logDebug(
+            hints.length
+              ? `Objetos con nombre parecido en el GLB: ${hints.slice(0, 8).join(', ')}`
+              : 'Ningun objeto del GLB tiene "marker", "ref" o "scale" en el nombre: ¿se exporto la placa? Revisa "Limit to: Selected Objects" y que no este oculta.',
+            'error'
+          );
           return;
         }
 
@@ -3467,12 +3480,12 @@
       // "_marker_ref": convencion de calibracion del modo Marcador que no
       // aplica aqui (no hay marcador impreso que calibrar) - se ignora
       // siempre, tal cual llega del GLB.
-      const MARKER_REF_NAME_RE = /(^|_)marker_ref(\.\d+)?$/i;
+      const MARKER_REF_NAME_RE = /(^|_)marker_ref\.?\d*$/i;
       function isMarkerRef(mesh) { return MARKER_REF_NAME_RE.test(mesh.name || ''); }
       // "_shadow" y "_cutter" SI se soportan (Seccion y Sombra portadas del
       // modo Marcador): se gestionan aparte (setupShadowPlanes,
       // rebuildCapSliceMeshes), no se ocultan sin mas.
-      const SHADOW_NAME_RE = /(^|_)shadow(\.\d+)?$/i;
+      const SHADOW_NAME_RE = /(^|_)shadow\.?\d*$/i;
       function isShadowPlane(mesh) { return SHADOW_NAME_RE.test(mesh.name || ''); }
       const CUTTER_NAME_HINTS = ['__cutter', '_cutter', '[cutter]', '.cutter'];
       function isCutterMesh(mesh) {
