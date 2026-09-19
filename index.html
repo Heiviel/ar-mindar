@@ -1131,7 +1131,7 @@
       // modelo, no necesariamente sobre el). El ancho real del soporte
       // impreso (variable de una sesion a otra, no depende del modelo) se
       // introduce aparte en "markerRealWidthInput".
-      const MARKER_SCALE_NAME_RE = /(^|_)marker_scale_([0-9]+(?:\.[0-9]+)?)(\.\d+)?$/i;
+      const MARKER_SCALE_NAME_RE = /(^|_)marker_scale_([0-9]+(?:\.[0-9]+)?)(?:_[vh])?(\.\d+)?$/i;
       function getMarkerScaleRatio(obj) {
         const m = MARKER_SCALE_NAME_RE.exec(obj.name || '');
         return m ? parseFloat(m[2]) : null;
