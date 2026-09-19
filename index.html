@@ -276,13 +276,10 @@
           <input type="file" id="targetFileInput" accept=".mind" />
         </div>
         <div class="row">
-          <label><input type="checkbox" id="targetVerticalChk" /> 🧱 Marcador vertical (no tumbado)</label>
-        </div>
-        <div class="row">
           <label for="modelFileInput">Modelo (.glb)</label>
           <input type="file" id="modelFileInput" accept=".glb" />
         </div>
-        <p class="hint">Sin elegir nada se usa el marcador/modelo por defecto (bola). Elige archivos (y marca si el marcador es vertical) y luego pulsa "Iniciar cámara AR" — o, si la cámara ya está en marcha, "Aplicar cambios".</p>
+        <p class="hint">Sin elegir nada se usa el marcador/modelo por defecto (bola). Elige archivos y luego pulsa "Iniciar cámara AR" — o, si la cámara ya está en marcha, "Aplicar cambios".</p>
         <p class="pickedName" id="assetPickedName" hidden></p>
         <div class="row" id="applyAssetChangesRow" hidden>
           <button id="applyAssetChangesBtn" type="button">✔ Aplicar cambios</button>
@@ -619,7 +616,6 @@
     // los archivos).
     // ---------------------------------------------------------------
     const targetFileInput = document.getElementById('targetFileInput');
-    const targetVerticalChk = document.getElementById('targetVerticalChk');
     const modelFileInput = document.getElementById('modelFileInput');
     const applyAssetChangesRow = document.getElementById('applyAssetChangesRow');
     const applyAssetChangesBtn = document.getElementById('applyAssetChangesBtn');
@@ -651,16 +647,6 @@
       assetPickedName.hidden = !parts.length;
       assetPickedName.textContent = parts.length ? `Usando ${parts.join(', ')}` : '';
     }
-
-    // "Marcador vertical": unico control para esto (ver
-    // applyVerticalMarkerCorrection, panel Visualizacion). Se guarda en
-    // localStorage en cuanto cambia (no hace falta esperar a "Aplicar
-    // cambios") porque no reinicia nada por si solo - el reinicio real
-    // solo hace falta al cambiar el propio archivo del marcador.
-    targetVerticalChk.checked = localStorage.getItem('arMindarVerticalMarker') === '1';
-    targetVerticalChk.addEventListener('change', () => {
-      localStorage.setItem('arMindarVerticalMarker', targetVerticalChk.checked ? '1' : '0');
-    });
 
     targetFileInput.addEventListener('change', () => {
       const file = targetFileInput.files?.[0];
@@ -1131,10 +1117,13 @@
       // modelo, no necesariamente sobre el). El ancho real del soporte
       // impreso (variable de una sesion a otra, no depende del modelo) se
       // introduce aparte en "markerRealWidthInput".
-      const MARKER_SCALE_NAME_RE = /(^|_)marker_scale_([0-9]+(?:\.[0-9]+)?)(\.\d+)?$/i;
-      function getMarkerScaleRatio(obj) {
+      // Sufijo opcional "_v" (marcador vertical) o "_h" (horizontal, por
+      // defecto): "_marker_scale_500_v".
+      const MARKER_SCALE_NAME_RE = /(^|_)marker_scale_([0-9]+(?:\.[0-9]+)?)(?:_([vh]))?(\.\d+)?$/i;
+      function parseMarkerScale(obj) {
         const m = MARKER_SCALE_NAME_RE.exec(obj.name || '');
-        return m ? parseFloat(m[2]) : null;
+        if (!m) return null;
+        return { ratio: parseFloat(m[2]), vertical: (m[3] || '').toLowerCase() === 'v' };
       }
       const markerRealWidthInput = document.getElementById('markerRealWidthInput');
       const savedMarkerRealWidth = localStorage.getItem('arMindarMarkerRealWidth');
@@ -1156,13 +1145,11 @@
       // trabaja en espacio local del modelo (ajeno a su rotacion como
       // objeto), asi que nada de eso se ve afectado por este giro base.
       //
-      // Unica fuente de este dato: el checkbox "targetVerticalChk" de la
-      // portada (panel "Modelo y marcador"), guardado en localStorage. Se
-      // quito el checkbox equivalente de este panel (Visualizacion) para
-      // no tener dos controles distintos para lo mismo - cambiar el
-      // marcador de vertical a tumbado (o al reves) requiere de todos
-      // modos "Aplicar cambios" (reinicio), asi que no hacia falta poder
-      // tocarlo aqui en caliente.
+      // Unica fuente de este dato: el propio GLB (ver
+      // applyMarkerRefCalibration) - se quitaron los checkboxes para que
+      // no pueda haber un desacuerdo entre archivo y ajuste manual. Sin
+      // "_marker_ref"/"_marker_scale_N" se asume horizontal.
+      let markerIsVertical = false;
       // Punto del modelo (en su espacio local) que debe coincidir con el
       // centro del marcador: el "_marker_scale_N"/"_marker_ref". Con un
       // modelo a 1:1 esta lejisimos del origen del modelo, asi que
@@ -1182,7 +1169,7 @@
       function applyVerticalMarkerCorrection() {
         if (!loadedModel) return;
         rotateAboutAttach(() => {
-          loadedModel.rotation.x = localStorage.getItem('arMindarVerticalMarker') === '1' ? -Math.PI / 2 : 0;
+          loadedModel.rotation.x = markerIsVertical ? -Math.PI / 2 : 0;
         });
       }
       // Guarda center/ratio de "_marker_scale_N" del modelo actual (o null
@@ -2197,15 +2184,21 @@
       function applyMarkerRefCalibration(model) {
         markerScaleCalibration = null;
         markerAttachLocal.set(0, 0, 0);
+        markerIsVertical = false;
         let scaleRef = null;
         let scaleRatio = null;
         model.traverse((child) => {
           if (!scaleRef) {
-            const ratio = getMarkerScaleRatio(child);
-            if (ratio && ratio > 0) { scaleRef = child; scaleRatio = ratio; }
+            const parsed = parseMarkerScale(child);
+            if (parsed && parsed.ratio > 0) {
+              scaleRef = child;
+              scaleRatio = parsed.ratio;
+              markerIsVertical = parsed.vertical;
+            }
           }
         });
         if (scaleRef) {
+          logDebug(`Marcador ${markerIsVertical ? 'VERTICAL (sufijo _v)' : 'horizontal'} segun "${scaleRef.name}".`, 'ok');
           markerScaleCalibration = {
             center: new THREE.Vector3().setFromMatrixPosition(scaleRef.matrixWorld),
             ratio: scaleRatio,
@@ -2242,6 +2235,14 @@
         const center = new THREE.Vector3().setFromMatrixPosition(found.matrixWorld);
         const dims = [size.x, size.y, size.z].sort((a, b) => a - b);
         const refWidth = dims[2]; // la dimension mayor = ancho real del target
+        // Orientacion segun la propia placa (GLB en Z-up nativo): si su
+        // dimension mas fina es la vertical (Z), esta tumbada = marcador
+        // horizontal; si no, esta de pie = marcador vertical.
+        markerIsVertical = !(size.z <= size.x && size.z <= size.y);
+        logDebug(
+          `Marcador ${markerIsVertical ? 'VERTICAL (placa de pie)' : 'horizontal (placa tumbada)'} segun "_marker_ref" ` +
+          `(dimensiones ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}).`, 'ok'
+        );
 
         if (!(refWidth > 0)) {
           logDebug('"_marker_ref" tiene tamano nulo; se ignora la calibracion.', 'error');
