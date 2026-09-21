@@ -141,20 +141,24 @@
   }
   #clipPanel.hidden { display:none; }
   #clipPanel .row { display:flex; align-items:center; gap:8px; }
-  #clipPanel button, #stateButtons button, #viewPanel button {
+  #clipPanel button, #stateButtons button, #viewPanel button, #navPointButtons button {
     flex:1; min-height:40px; padding:8px 4px; background:#222; color:#fff; border:1px solid #555;
     border-radius:6px; font-size:13px;
   }
   #clipPanel button.active,
   #stateButtons button.active,
-  #viewPanel button.active {
+  #viewPanel button.active,
+  #navPointButtons button.active {
     background:#0ea5cf; border-color:#5be7ff; color:#061018; font-weight:700;
   }
   /* El check antepuesto marca el estado activo mas alla del color, para que
      no dependa solo de distinguir cian vs. gris (daltonismo, pantalla al sol). */
   #clipPanel button.active::before,
   #stateButtons button.active::before,
-  #viewPanel button.active::before { content:'✓ '; }
+  #viewPanel button.active::before,
+  #navPointButtons button.active::before { content:'✓ '; }
+  #navPanel.hidden { display:none; }
+  #navPointButtons { display:flex; flex-wrap:wrap; gap:8px; }
   #clipPanel input[type="range"] { flex:1; }
   #clipToggle label { display:flex; align-items:center; gap:6px; }
   #statePanel.hidden { display:none; }
@@ -315,6 +319,19 @@
       <h4 class="groupTitle"><button type="button" class="groupToggleBtn" aria-expanded="false" aria-controls="statePanelBody">Estados</button></h4>
       <div class="groupBody" id="statePanelBody">
         <div id="stateButtons"></div>
+      </div>
+    </section>
+
+    <section id="navPanel" class="group hidden">
+      <h4 class="groupTitle"><button type="button" class="groupToggleBtn" aria-expanded="true" aria-controls="navPanelBody">Navegar</button></h4>
+      <div class="groupBody" id="navPanelBody">
+        <div id="navPointButtons"></div>
+        <div class="row">
+          <span>Velocidad</span>
+          <span id="navSpeedVal">x1</span>
+          <button id="navExitBtn" type="button" disabled>Salir de la navegación</button>
+        </div>
+        <p class="hint">W A S D o flechas: moverse · arrastrar: mirar · E / Espacio: subir · Q / C: bajar · Mayús: rápido · rueda: velocidad · Esc: salir</p>
       </div>
     </section>
 
@@ -2174,6 +2191,86 @@
         );
       }
 
+      // ---------------------------------------------------------------
+      // Puntos de navegacion: Empties "pt1_Plaza", "pt2_Torre"... El
+      // numero ordena la lista y lo que va tras el "_" es el texto del
+      // boton. Su POSICION es donde se situa el observador (ojos, a
+      // 1.83 m sobre el suelo) y su direccion de vista es el eje +Y local
+      // del Empty (la flecha VERDE si se muestra como "Arrows"; en la
+      // vista frontal de Blender, +Y es "hacia delante"). Solo cuenta la
+      // direccion, no su forma, asi que vale cualquier tipo de Empty.
+      //
+      // Escala: el modelo puede haberse escalado en Blender de cualquier
+      // forma. Como los Empties se colocan a 1.83 m del suelo, la altura
+      // real de cada uno sobre el suelo (rayo hacia abajo) da cuantas
+      // unidades del modelo son 1 metro. Se usa el punto MAS BAJO (los
+      // aereos estan mas altos y darian una escala falsa).
+      //
+      // Debe llamarse con el modelo aun sin calibrar (matrixWorld ==
+      // espacio local del modelo) y elimina los Empties de la escena.
+      // ---------------------------------------------------------------
+      const NAV_POINT_RE = /^pt(\d+)(?:_(.+))?$/i;
+      const NAV_EYE_HEIGHT_M = 1.83;
+      function extractNavPoints(model) {
+        const found = [];
+        model.traverse((c) => {
+          if (c !== model && NAV_POINT_RE.test((c.name || '').trim())) found.push(c);
+        });
+        if (!found.length) return { points: [], unitsPerMeter: 1 };
+
+        model.updateMatrixWorld(true);
+        const raycaster = new THREE.Raycaster();
+        const down = new THREE.Vector3(0, 0, -1);
+        let fallbackGround = null;
+        const points = [];
+        let unitsPerMeter = Infinity;
+        const notes = [];
+
+        found.forEach((obj) => {
+          const m = NAV_POINT_RE.exec(obj.name.trim());
+          const pos = new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld);
+          const quat = new THREE.Quaternion();
+          obj.matrixWorld.decompose(new THREE.Vector3(), quat, new THREE.Vector3());
+          const dir = new THREE.Vector3(0, 1, 0).applyQuaternion(quat).normalize();
+
+          raycaster.set(pos, down);
+          const hit = raycaster.intersectObject(model, true).find((h) =>
+            h.object.isMesh && !isMarkerRef(h.object) && !isShadowPlane(h.object) && !isCutterMesh(h.object));
+          let groundZ;
+          if (hit) {
+            groundZ = hit.point.z;
+          } else {
+            if (fallbackGround === null) {
+              const box = new THREE.Box3();
+              model.traverse((c) => {
+                if (c.isMesh && !isMarkerRef(c) && !isShadowPlane(c) && !isCutterMesh(c)) box.expandByObject(c);
+              });
+              fallbackGround = box.isEmpty() ? pos.z - NAV_EYE_HEIGHT_M : box.min.z;
+            }
+            groundZ = fallbackGround;
+            notes.push(`"${obj.name}" sin suelo debajo (se usa la base del modelo)`);
+          }
+          const heightUnits = pos.z - groundZ;
+          if (heightUnits > 1e-6) unitsPerMeter = Math.min(unitsPerMeter, heightUnits / NAV_EYE_HEIGHT_M);
+
+          const label = (m[2] || '').replace(/_/g, ' ').trim() || `Punto ${m[1]}`;
+          points.push({ number: parseInt(m[1], 10), label, pos, dir });
+        });
+
+        found.forEach((obj) => { if (obj.parent) obj.parent.remove(obj); });
+        points.sort((a, b) => a.number - b.number || a.label.localeCompare(b.label));
+        if (!Number.isFinite(unitsPerMeter)) {
+          unitsPerMeter = 1;
+          notes.push('no se pudo deducir la escala (ningun punto sobre el suelo): se asume 1 unidad = 1 m');
+        }
+        logDebug(
+          `Navegacion: ${points.length} punto(s); 1 m = ${unitsPerMeter.toFixed(4)} unidades del modelo ` +
+          `(altura de ojos ${NAV_EYE_HEIGHT_M} m).${notes.length ? ' Avisos: ' + notes.join('; ') : ''}`,
+          notes.length ? 'error' : 'ok'
+        );
+        return { points, unitsPerMeter };
+      }
+
       // Aplica (o reaplica) la calibracion de "_marker_scale_N" usando el
       // ancho real del soporte impreso vigente en ese momento. Separada de
       // applyMarkerRefCalibration para poder llamarla de nuevo cuando el
@@ -2447,6 +2544,216 @@
         refreshModelBindings(true);
       });
 
+      // ---------------------------------------------------------------
+      // Modo NAVEGAR: recorrer el modelo como en un videojuego (teclado y
+      // raton) desde los puntos "pt…" del GLB (ver extractNavPoints).
+      //
+      // El modelo se saca del ancla y se cuelga directamente de la escena:
+      // su matriz se calcula cada frame para que el observador (posicion +
+      // rumbo/cabeceo en espacio del modelo) quede en el origen mirando
+      // hacia -Z, que es donde esta la camara de MindAR. Asi no depende del
+      // marcador (ni de que se pierda el tracking), y la vista es la de una
+      // persona de 1.83 m: la perspectiva es invariante a la escala, asi que
+      // da igual lo grande o pequeno que se viera el modelo sobre la mesa.
+      //
+      // Recorte de camara: el "near" de MindAR (10) esta pensado para
+      // unidades de pixel del marcador y cortaria todo lo cercano. Se fija
+      // en 5 cm reales (NAV_NEAR_M) con el mundo a NAV_WORLD_PER_METER
+      // unidades por metro real, y se restaura al salir.
+      // ---------------------------------------------------------------
+      const NAV_WORLD_PER_METER = 20;
+      const NAV_NEAR_M = 0.05;
+      const NAV_BASE_SPEED_MPS = 6;
+      const NAV_MOUSE_LOOK = 0.003;
+      const NAV_TURN_RATE = Math.PI / 2; // rad/s con las flechas izq/dcha
+      let navPoints = [];
+      let navUnitsPerMeter = 1;
+      let navActive = false;
+      let navActiveIndex = -1;
+      let navSpeedMul = 1;
+      let navFly = null;
+      let navSavedNear = null;
+      let navSavedHint = null;
+      const navState = { pos: new THREE.Vector3(), yaw: 0, pitch: 0 };
+      const navKeys = new Set();
+      const navPointButtons = document.getElementById('navPointButtons');
+      const navPanel = document.getElementById('navPanel');
+      const navExitBtn = document.getElementById('navExitBtn');
+      const navSpeedVal = document.getElementById('navSpeedVal');
+      const NAV_HINT = 'Navegando — W A S D moverse · arrastra para mirar · E/Q subir/bajar · Mayús rápido · Esc salir';
+
+      function navAnglesFromDir(dir) {
+        return {
+          yaw: Math.atan2(dir.y, dir.x),
+          pitch: Math.asin(THREE.MathUtils.clamp(dir.z, -1, 1)),
+        };
+      }
+      function renderNavPanel() {
+        navPanel.classList.toggle('hidden', !navPoints.length);
+        navPointButtons.innerHTML = '';
+        navPoints.forEach((p, index) => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.textContent = p.label;
+          const isActive = navActive && index === navActiveIndex;
+          btn.classList.toggle('active', isActive);
+          btn.setAttribute('aria-pressed', String(isActive));
+          btn.addEventListener('click', () => goToNavPoint(index));
+          navPointButtons.appendChild(btn);
+        });
+        navExitBtn.disabled = !navActive;
+        navSpeedVal.textContent = `x${navSpeedMul.toFixed(2).replace(/\.?0+$/, '')}`;
+      }
+      function goToNavPoint(index) {
+        const p = navPoints[index];
+        if (!p || !loadedModel) return;
+        const target = navAnglesFromDir(p.dir);
+        if (!navActive) {
+          navActive = true;
+          navSavedNear = camera.near;
+          navSavedHint = hint.textContent;
+          hint.textContent = NAV_HINT;
+          // Fuera del ancla: MindAR reescribe anchor.group.matrix cada frame.
+          scene.add(loadedModel);
+          loadedModel.matrixAutoUpdate = false;
+          shadowPlaneMeshes.forEach((m) => { m.visible = false; });
+          navState.pos.copy(p.pos);
+          navState.yaw = target.yaw;
+          navState.pitch = THREE.MathUtils.clamp(target.pitch, -1.48, 1.48);
+          navFly = null;
+        } else {
+          // Ir por el camino corto en el giro (sin dar la vuelta entera).
+          let dy = target.yaw - navState.yaw;
+          dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+          navFly = {
+            fromPos: navState.pos.clone(), toPos: p.pos.clone(),
+            fromYaw: navState.yaw, toYaw: navState.yaw + dy,
+            fromPitch: navState.pitch, toPitch: THREE.MathUtils.clamp(target.pitch, -1.48, 1.48),
+            t: 0,
+          };
+        }
+        navActiveIndex = index;
+        renderNavPanel();
+      }
+      function exitNavigation() {
+        if (!navActive) return;
+        navActive = false;
+        navActiveIndex = -1;
+        navFly = null;
+        navKeys.clear();
+        if (loadedModel) {
+          anchor.group.add(loadedModel);
+          loadedModel.matrixAutoUpdate = true;
+          loadedModel.updateMatrix(); // recompone desde position/rotation/scale, que no se tocaron
+        }
+        shadowPlaneMeshes.forEach((m) => { m.visible = shadowsEnabled; });
+        if (navSavedNear !== null) {
+          camera.near = navSavedNear;
+          camera.updateProjectionMatrix();
+        }
+        if (navSavedHint !== null) hint.textContent = navSavedHint;
+        renderNavPanel();
+      }
+      navExitBtn.addEventListener('click', exitNavigation);
+
+      const _navM = new THREE.Matrix4();
+      const _navT = new THREE.Matrix4();
+      const _navF = new THREE.Vector3();
+      const _navR = new THREE.Vector3();
+      const _navU = new THREE.Vector3();
+      const _navUp = new THREE.Vector3(0, 0, 1);
+      function navStep(dt) {
+        if (!navActive || !loadedModel) return;
+
+        // Camara: el near/far de MindAR se reimpone en cada resize.
+        const near = NAV_NEAR_M * NAV_WORLD_PER_METER;
+        if (camera.near !== near) {
+          camera.near = near;
+          camera.updateProjectionMatrix();
+        }
+
+        if (navFly) {
+          navFly.t = Math.min(1, navFly.t + dt / 0.7);
+          const k = navFly.t * navFly.t * (3 - 2 * navFly.t);
+          navState.pos.lerpVectors(navFly.fromPos, navFly.toPos, k);
+          navState.yaw = THREE.MathUtils.lerp(navFly.fromYaw, navFly.toYaw, k);
+          navState.pitch = THREE.MathUtils.lerp(navFly.fromPitch, navFly.toPitch, k);
+          if (navFly.t >= 1) navFly = null;
+        } else {
+          if (navKeys.has('ArrowLeft')) navState.yaw += NAV_TURN_RATE * dt;
+          if (navKeys.has('ArrowRight')) navState.yaw -= NAV_TURN_RATE * dt;
+          const speedMps = NAV_BASE_SPEED_MPS * navSpeedMul * (navKeys.has('ShiftLeft') || navKeys.has('ShiftRight') ? 4 : 1);
+          const step = speedMps * navUnitsPerMeter * dt;
+          const cy = Math.cos(navState.yaw);
+          const sy = Math.sin(navState.yaw);
+          let fwd = 0, side = 0, vert = 0;
+          if (navKeys.has('KeyW') || navKeys.has('ArrowUp')) fwd += 1;
+          if (navKeys.has('KeyS') || navKeys.has('ArrowDown')) fwd -= 1;
+          if (navKeys.has('KeyD')) side += 1;
+          if (navKeys.has('KeyA')) side -= 1;
+          if (navKeys.has('KeyE') || navKeys.has('Space')) vert += 1;
+          if (navKeys.has('KeyQ') || navKeys.has('KeyC')) vert -= 1;
+          navState.pos.x += (cy * fwd + sy * side) * step;
+          navState.pos.y += (sy * fwd - cy * side) * step;
+          navState.pos.z += vert * step;
+        }
+
+        // Base de la camara en espacio del modelo: derecha, arriba, delante.
+        const cp = Math.cos(navState.pitch);
+        _navF.set(cp * Math.cos(navState.yaw), cp * Math.sin(navState.yaw), Math.sin(navState.pitch));
+        _navR.crossVectors(_navF, _navUp).normalize();
+        _navU.crossVectors(_navR, _navF);
+        // modelo -> camara: x=derecha, y=arriba, z=-delante; luego escala
+        // a unidades de mundo y el observador al origen.
+        _navM.set(
+          _navR.x, _navR.y, _navR.z, 0,
+          _navU.x, _navU.y, _navU.z, 0,
+          -_navF.x, -_navF.y, -_navF.z, 0,
+          0, 0, 0, 1
+        );
+        const s = NAV_WORLD_PER_METER / navUnitsPerMeter;
+        _navT.makeTranslation(-navState.pos.x, -navState.pos.y, -navState.pos.z);
+        loadedModel.matrix.makeScale(s, s, s).multiply(_navM).multiply(_navT);
+        loadedModel.matrixWorldNeedsUpdate = true;
+        loadedModel.updateMatrixWorld(true);
+      }
+
+      window.addEventListener('keydown', (e) => {
+        if (!navActive) return;
+        if (e.target.closest && e.target.closest('input, select, textarea')) return;
+        if (e.code === 'Escape') { exitNavigation(); return; }
+        navKeys.add(e.code);
+        if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
+      });
+      window.addEventListener('keyup', (e) => { navKeys.delete(e.code); });
+      window.addEventListener('blur', () => navKeys.clear());
+
+      let navLooking = false;
+      let navLastX = 0;
+      let navLastY = 0;
+      document.addEventListener('mousedown', (e) => {
+        if (!navActive || e.button !== 0) return;
+        if (e.target.closest('#leftMenu')) return;
+        navLooking = true;
+        navLastX = e.clientX;
+        navLastY = e.clientY;
+      });
+      window.addEventListener('mousemove', (e) => {
+        if (!navActive || !navLooking) return;
+        const dx = e.clientX - navLastX;
+        const dy = e.clientY - navLastY;
+        navLastX = e.clientX;
+        navLastY = e.clientY;
+        if (navFly) return;
+        navState.yaw -= dx * NAV_MOUSE_LOOK;
+        navState.pitch = THREE.MathUtils.clamp(navState.pitch - dy * NAV_MOUSE_LOOK, -1.48, 1.48);
+      });
+      window.addEventListener('mouseup', () => { navLooking = false; });
+      window.addEventListener('resize', () => {
+        // MindAR reasigna near/far en su propio "resize" (registrado antes).
+        if (navActive) navStep(0);
+      });
+
       // Arrastrar con el raton para rotar la pieza sobre el eje vertical
       // (como girar una peana), igual que el gesto de giro del modo Suelo.
       // Es el eje Z, no el Y: en este modo "arriba" es Z (el mismo motivo
@@ -2467,7 +2774,7 @@
       let isDraggingModel = false;
       let lastDragX = 0;
       document.addEventListener('mousedown', (e) => {
-        if (!loadedModel) return;
+        if (!loadedModel || navActive) return;
         if (e.target.closest('#leftMenu')) return; // no secuestrar clics del menu
         if (e.button !== 0) return; // solo boton izquierdo - el derecho es "paneo" (ver mas abajo)
         isDraggingModel = true;
@@ -2496,7 +2803,7 @@
       let lastPanY = 0;
       const MOUSE_PAN_GAIN = 0.0025;
       document.addEventListener('mousedown', (e) => {
-        if (!loadedModel) return;
+        if (!loadedModel || navActive) return;
         if (e.target.closest('#leftMenu')) return;
         if (e.button !== 1) return; // boton central (rueda)
         e.preventDefault(); // evita el autoscroll nativo del boton central
@@ -2529,6 +2836,12 @@
         if (!loadedModel) return;
         if (e.target.closest('#leftMenu')) return;
         e.preventDefault();
+        if (navActive) {
+          // En navegacion la rueda cambia la velocidad, no el zoom.
+          navSpeedMul = THREE.MathUtils.clamp(navSpeedMul * Math.pow(1.0015, -e.deltaY), 0.1, 30);
+          navSpeedVal.textContent = `x${navSpeedMul.toFixed(2).replace(/\.?0+$/, '')}`;
+          return;
+        }
         const factor = Math.pow(1.0015, -e.deltaY);
         const min = parseFloat(displayScaleSlider.min);
         const max = parseFloat(displayScaleSlider.max);
@@ -2964,6 +3277,9 @@
         });
       }
       function resetModelState() {
+        exitNavigation();
+        navPoints = [];
+        renderNavPanel();
         if (mixer) mixer.stopAllAction();
         mixer = null;
         animDuration = 0;
@@ -3029,6 +3345,12 @@
           // (ver applyMarkerRefCalibration). Debe ejecutarse con el modelo
           // aun sin padre para que matrixWorld sea local a "loadedModel".
           loadedModel.updateMatrixWorld(true);
+          // Puntos de navegacion: ANTES de calibrar (necesitan el espacio
+          // local del modelo sin escalar) y retira los Empties "pt…".
+          const navResult = extractNavPoints(loadedModel);
+          navPoints = navResult.points;
+          navUnitsPerMeter = navResult.unitsPerMeter;
+          renderNavPanel();
           applyMarkerRefCalibration(loadedModel);
           applyVerticalMarkerCorrection();
           baseModelScale = loadedModel.scale.x;
@@ -3194,6 +3516,7 @@
             animTime.textContent = t.toFixed(1) + 's';
           }
         }
+        navStep(delta);
         if (anchorFrozen) {
           // Reimponer la matriz congelada por si MindAR (u otra parte de
           // three.js) la ha tocado este frame - ver freezePositionChk.
