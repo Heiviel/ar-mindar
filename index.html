@@ -2198,38 +2198,79 @@
       // ---------------------------------------------------------------
       // Puntos de navegacion: Empties "pt1_Plaza", "pt2_Torre"... El
       // numero ordena la lista y lo que va tras el "_" es el texto del
-      // boton. Su POSICION es donde se situa el observador (ojos, a
-      // 1.83 m sobre el suelo) y su direccion de vista es el eje +Y local
-      // del Empty (la flecha VERDE si se muestra como "Arrows"; en la
-      // vista frontal de Blender, +Y es "hacia delante"). Solo cuenta la
-      // direccion, no su forma, asi que vale cualquier tipo de Empty.
+      // boton. Su direccion de vista es el eje +Y local del Empty (la
+      // flecha VERDE si se muestra como "Arrows"; en la vista frontal de
+      // Blender, +Y es "hacia delante"). Solo cuenta la direccion, no su
+      // forma, asi que vale cualquier tipo de Empty.
       //
-      // Escala: el modelo puede haberse escalado en Blender de cualquier
-      // forma. Como los Empties se colocan a 1.83 m del suelo, la altura
-      // real de cada uno sobre el suelo (rayo hacia abajo) da cuantas
-      // unidades del modelo son 1 metro. Se usa el punto MAS BAJO (los
-      // aereos estan mas altos y darian una escala falsa).
+      // Altura: los OJOS van siempre a 1.83 m sobre el suelo. Si el Empty
+      // esta apoyado en el suelo (menos de medio metro por encima), la app
+      // lo sube a la altura de ojos; si esta mas alto (vista aerea, o ya
+      // a altura de ojos) se respeta su altura tal cual.
+      //
+      // Escala: por defecto 1 unidad del modelo = 1 metro (lo normal en
+      // Blender). Si el modelo se escalo, se indica con un objeto
+      // "_altura" (o "_height"): una malla (o caja) que mide 1.83 m de alto
+      // en el modelo, o un Empty colocado a 1.83 m sobre el suelo. De ahi
+      // se deduce cuantas unidades del modelo son 1 metro.
       //
       // Debe llamarse con el modelo aun sin calibrar (matrixWorld ==
-      // espacio local del modelo) y elimina los Empties de la escena.
+      // espacio local del modelo) y elimina los Empties/objeto de la escena.
       // ---------------------------------------------------------------
       const NAV_POINT_RE = /^pt(\d+)(?:_(.+))?$/i;
+      const NAV_HEIGHT_RE = /(^|_)(altura|height)\.?\d*$/i;
       const NAV_EYE_HEIGHT_M = 1.83;
       function extractNavPoints(model) {
         const found = [];
+        let heightObj = null;
         model.traverse((c) => {
-          if (c !== model && NAV_POINT_RE.test((c.name || '').trim())) found.push(c);
+          if (c === model) return;
+          const nm = (c.name || '').trim();
+          if (NAV_POINT_RE.test(nm)) found.push(c);
+          else if (!heightObj && NAV_HEIGHT_RE.test(nm)) heightObj = c;
         });
         if (!found.length) return { points: [], unitsPerMeter: 1 };
 
         model.updateMatrixWorld(true);
         const raycaster = new THREE.Raycaster();
         const down = new THREE.Vector3(0, 0, -1);
-        let fallbackGround = null;
-        const points = [];
-        let unitsPerMeter = Infinity;
-        const notes = [];
+        const insideHeightObj = (o) => {
+          for (let p = o; p; p = p.parent) if (p === heightObj) return true;
+          return false;
+        };
+        // Z del primer suelo bajo un punto (null si no hay nada debajo).
+        const groundBelow = (pos) => {
+          // El rayo parte 30 cm por encima: un Empty puesto a mano suele
+          // quedar unos cm BAJO la superficie del suelo, y desde ahi no lo veria.
+          raycaster.set(new THREE.Vector3(pos.x, pos.y, pos.z + 0.3 * unitsPerMeter), down);
+          const hit = raycaster.intersectObject(model, true).find((h) =>
+            h.object.isMesh && !isMarkerRef(h.object) && !isShadowPlane(h.object) &&
+            !isCutterMesh(h.object) && !(heightObj && insideHeightObj(h.object)));
+          return hit ? hit.point.z : null;
+        };
 
+        const notes = [];
+        let unitsPerMeter = 1;
+        let unitsSource = 'se asume 1 unidad = 1 m (para otra escala, anade un objeto "_altura" de 1.83 m)';
+        if (heightObj) {
+          let h = 0;
+          const box = new THREE.Box3().setFromObject(heightObj);
+          if (!box.isEmpty()) {
+            h = box.max.z - box.min.z;
+          } else {
+            const p = new THREE.Vector3().setFromMatrixPosition(heightObj.matrixWorld);
+            const g = groundBelow(p);
+            if (g !== null) h = p.z - g;
+          }
+          if (h > 1e-9) {
+            unitsPerMeter = h / NAV_EYE_HEIGHT_M;
+            unitsSource = `deducido de "${heightObj.name}"`;
+          } else {
+            notes.push(`"${heightObj.name}" no tiene altura ni suelo debajo: se ignora`);
+          }
+        }
+
+        const points = [];
         found.forEach((obj) => {
           const m = NAV_POINT_RE.exec(obj.name.trim());
           const pos = new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld);
@@ -2237,39 +2278,24 @@
           obj.matrixWorld.decompose(new THREE.Vector3(), quat, new THREE.Vector3());
           const dir = new THREE.Vector3(0, 1, 0).applyQuaternion(quat).normalize();
 
-          raycaster.set(pos, down);
-          const hit = raycaster.intersectObject(model, true).find((h) =>
-            h.object.isMesh && !isMarkerRef(h.object) && !isShadowPlane(h.object) && !isCutterMesh(h.object));
-          let groundZ;
-          if (hit) {
-            groundZ = hit.point.z;
-          } else {
-            if (fallbackGround === null) {
-              const box = new THREE.Box3();
-              model.traverse((c) => {
-                if (c.isMesh && !isMarkerRef(c) && !isShadowPlane(c) && !isCutterMesh(c)) box.expandByObject(c);
-              });
-              fallbackGround = box.isEmpty() ? pos.z - NAV_EYE_HEIGHT_M : box.min.z;
-            }
-            groundZ = fallbackGround;
-            notes.push(`"${obj.name}" sin suelo debajo (se usa la base del modelo)`);
+          const groundZ = groundBelow(pos);
+          const eye = pos.clone();
+          if (groundZ === null) {
+            notes.push(`"${obj.name}" sin suelo debajo (se respeta su altura)`);
+          } else if (pos.z - groundZ < 0.5 * unitsPerMeter) {
+            eye.z = groundZ + NAV_EYE_HEIGHT_M * unitsPerMeter; // apoyado en el suelo: ojos a 1.83 m
           }
-          const heightUnits = pos.z - groundZ;
-          if (heightUnits > 1e-6) unitsPerMeter = Math.min(unitsPerMeter, heightUnits / NAV_EYE_HEIGHT_M);
-
           const label = (m[2] || '').replace(/_/g, ' ').trim() || `Punto ${m[1]}`;
-          points.push({ number: parseInt(m[1], 10), label, pos, dir });
+          points.push({ number: parseInt(m[1], 10), label, pos: eye, dir, groundZ });
         });
 
         found.forEach((obj) => { if (obj.parent) obj.parent.remove(obj); });
+        if (heightObj && heightObj.parent) heightObj.parent.remove(heightObj);
         points.sort((a, b) => a.number - b.number || a.label.localeCompare(b.label));
-        if (!Number.isFinite(unitsPerMeter)) {
-          unitsPerMeter = 1;
-          notes.push('no se pudo deducir la escala (ningun punto sobre el suelo): se asume 1 unidad = 1 m');
-        }
         logDebug(
-          `Navegacion: ${points.length} punto(s); 1 m = ${unitsPerMeter.toFixed(4)} unidades del modelo ` +
-          `(altura de ojos ${NAV_EYE_HEIGHT_M} m).${notes.length ? ' Avisos: ' + notes.join('; ') : ''}`,
+          `Navegacion: ${points.length} punto(s), ojos a ${NAV_EYE_HEIGHT_M} m del suelo; ` +
+          `1 m = ${unitsPerMeter.toFixed(4)} unidades del modelo (${unitsSource}).` +
+          `${notes.length ? ' Avisos: ' + notes.join('; ') : ''}`,
           notes.length ? 'error' : 'ok'
         );
         return { points, unitsPerMeter };
@@ -2637,6 +2663,7 @@
       function goToNavPoint(index) {
         const p = navPoints[index];
         if (!p || !loadedModel) return;
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
         const target = navAnglesFromDir(p.dir);
         if (!navActive) {
           navActive = true;
@@ -2653,6 +2680,7 @@
           navFly = null;
           navVz = 0;
           navGrounded = false;
+          navGroundZ = p.groundZ !== null && p.groundZ !== undefined ? p.groundZ : p.pos.z - NAV_EYE_HEIGHT_M * navUnitsPerMeter;
           navSafePos.copy(p.pos);
           navApplyMatrix(); // que la primera colision ya use la matriz de navegacion
         } else {
@@ -2691,6 +2719,7 @@
       navExitBtn.addEventListener('click', exitNavigation);
       const navWalkChk = document.getElementById('navWalkChk');
       navWalkChk.addEventListener('change', () => {
+        navWalkChk.blur(); // que el teclado siga moviendo y Espacio no vuelva a marcar la casilla
         navWalk = navWalkChk.checked;
         navVz = 0;
         navGrounded = false;
@@ -2763,6 +2792,7 @@
       let navWalk = false;
       let navVz = 0;              // velocidad vertical, m/s
       let navGrounded = false;
+      let navGroundZ = 0;         // Z del suelo bajo los pies (los rayos de pared parten de aqui, no de "ojos - 1.83")
       const navSafePos = new THREE.Vector3();
       const _navRay = new THREE.Raycaster();
       const _navO = new THREE.Vector3();
@@ -2810,8 +2840,8 @@
           let len = speedMps * upm * dt;
           for (let iter = 0; iter < 2 && len > 1e-9; iter++) {
             let nearest = null;
-            for (const h of [-eye + step * 1.05, -eye * 0.5, -0.15 * upm]) {
-              const hit = navCast(new THREE.Vector3(pos.x, pos.y, pos.z + h), md, len + radius);
+            for (const z of [navGroundZ + step * 1.05, navGroundZ + eye * 0.5, pos.z - 0.15 * upm]) {
+              const hit = navCast(new THREE.Vector3(pos.x, pos.y, z), md, len + radius);
               if (hit && (!nearest || hit.dist < nearest.dist)) nearest = hit;
             }
             if (!nearest) { pos.x += md.x * len; pos.y += md.y * len; break; }
@@ -2845,6 +2875,7 @@
             if (delta > step + 1e-6) {
               pos.x = prevX; pos.y = prevY; // escalon demasiado alto: no se avanza
             } else if (delta >= -step) {
+              navGroundZ = pos.z - hit.dist;
               pos.z += delta > 0 ? delta * Math.min(1, 20 * dt) : delta;
               navVz = 0;
               navGrounded = true;
@@ -2854,7 +2885,7 @@
               navVz -= NAV_GRAVITY * dt;
               const target = pos.z + delta;
               pos.z = Math.max(target, pos.z + navVz * upm * dt);
-              if (pos.z <= target + 1e-9) { navVz = 0; navGrounded = true; navSafePos.copy(pos); }
+              if (pos.z <= target + 1e-9) { navVz = 0; navGrounded = true; navGroundZ = pos.z - eye; navSafePos.copy(pos); }
             }
           } else {
             navGrounded = false;
@@ -2888,7 +2919,11 @@
 
       window.addEventListener('keydown', (e) => {
         if (!navActive) return;
-        if (e.target.closest && e.target.closest('input, select, textarea')) return;
+        // Solo se ignoran los campos donde se escribe. Casillas, botones y
+        // sliders NO: tras pulsar "Caminar" el foco se queda en la casilla,
+        // y con el filtro anterior las teclas dejaban de moverte.
+        const t = e.target;
+        if (t && t.matches && t.matches('textarea, select, input:not([type=checkbox]):not([type=range]):not([type=button]):not([type=submit])')) return;
         if (e.code === 'Escape') { exitNavigation(); return; }
         navKeys.add(e.code);
         if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
