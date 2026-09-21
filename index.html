@@ -327,11 +327,14 @@
       <div class="groupBody" id="navPanelBody">
         <div id="navPointButtons"></div>
         <div class="row">
+          <label><input type="checkbox" id="navWalkChk" /> Caminar (colisiones, escaleras, gravedad)</label>
+        </div>
+        <div class="row">
           <span>Velocidad</span>
           <span id="navSpeedVal">x1</span>
           <button id="navExitBtn" type="button" disabled>Salir de la navegación</button>
         </div>
-        <p class="hint">W A S D o flechas: moverse · arrastrar: mirar · E / Espacio: subir · Q / C: bajar · Mayús: rápido · rueda: velocidad · Esc: salir</p>
+        <p class="hint">W A S D o flechas: moverse · arrastrar: mirar · Mayús: rápido · rueda: velocidad · Esc: salir. Volando: E / Espacio suben, Q / C bajan. Caminando: Espacio salta.</p>
       </div>
     </section>
 
@@ -1348,6 +1351,7 @@
           if (!child.isMesh) return;
           if (!isEffectivelyVisible(child)) return;
           if (isShadowPlane(child)) return; // gestionado por setupShadowPlanes
+          if (child.userData.navCollider) return; // geometria de colision de Navegar: nunca se ve
           if (isCutterMesh(child)) cutterMeshes.push(child);
           else visibleMeshes.push(child);
         });
@@ -1860,7 +1864,7 @@
         allStateMeshes = [];
         const activeRoot = stateEntries.length >= 2 ? stateEntries[activeStateIndex]?.node : null;
         loadedModel.traverse((child) => {
-          if (!child.isMesh || isCutterMesh(child) || isShadowPlane(child)) return;
+          if (!child.isMesh || isCutterMesh(child) || isShadowPlane(child) || child.userData.navCollider) return;
           if (activeRoot) {
             let p = child; let inside = false;
             while (p) { if (p === activeRoot) { inside = true; break; } p = p.parent; }
@@ -2170,7 +2174,7 @@
         const box = new THREE.Box3();
         box.makeEmpty();
         model.traverse((child) => {
-          if (!child.isMesh || isShadowPlane(child) || isCutterMesh(child)) return;
+          if (!child.isMesh || isShadowPlane(child) || isCutterMesh(child) || child.userData.navCollider) return;
           box.expandByObject(child);
         });
         if (box.isEmpty()) {
@@ -2269,6 +2273,31 @@
           notes.length ? 'error' : 'ok'
         );
         return { points, unitsPerMeter };
+      }
+
+      // Geometria de colision para el modo Caminar: mallas "_col" o
+      // "_collision" (o "xxx_col"). Se dejan colgando del modelo pero
+      // invisibles (asi siguen su transformacion) y se excluyen del resto
+      // de funciones (userData.navCollider). El material se sustituye por
+      // uno de doble cara: un rayo tiene que chocar tambien con la cara
+      // trasera de una pared. Sin ninguna, Caminar usa el modelo visible.
+      const NAV_COLLIDER_RE = /(^|_)(col|collision)\.?\d*$/i;
+      function setupNavColliders(model) {
+        navColliders.length = 0;
+        let tris = 0;
+        model.traverse((c) => {
+          if (!c.isMesh || !NAV_COLLIDER_RE.test((c.name || '').trim())) return;
+          forEachMeshMaterial(c, (m) => m.dispose());
+          c.material = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+          c.visible = false;
+          c.userData.navCollider = true;
+          navColliders.push(c);
+          const g = c.geometry;
+          tris += (g.index ? g.index.count : g.attributes.position.count) / 3;
+        });
+        if (navColliders.length) {
+          logDebug(`Colision: ${navColliders.length} malla(s) "_col" (${Math.round(tris)} triangulos). Caminar chocara contra ellas.`, 'ok');
+        }
       }
 
       // Aplica (o reaplica) la calibracion de "_marker_scale_N" usando el
@@ -2567,6 +2596,7 @@
       const NAV_MOUSE_LOOK = 0.003;
       const NAV_TURN_RATE = Math.PI / 2; // rad/s con las flechas izq/dcha
       let navPoints = [];
+      const navColliders = [];
       let navUnitsPerMeter = 1;
       let navActive = false;
       let navActiveIndex = -1;
@@ -2621,6 +2651,10 @@
           navState.yaw = target.yaw;
           navState.pitch = THREE.MathUtils.clamp(target.pitch, -1.48, 1.48);
           navFly = null;
+          navVz = 0;
+          navGrounded = false;
+          navSafePos.copy(p.pos);
+          navApplyMatrix(); // que la primera colision ya use la matriz de navegacion
         } else {
           // Ir por el camino corto en el giro (sin dar la vuelta entera).
           let dy = target.yaw - navState.yaw;
@@ -2655,6 +2689,20 @@
         renderNavPanel();
       }
       navExitBtn.addEventListener('click', exitNavigation);
+      const navWalkChk = document.getElementById('navWalkChk');
+      navWalkChk.addEventListener('change', () => {
+        navWalk = navWalkChk.checked;
+        navVz = 0;
+        navGrounded = false;
+        if (navWalk) {
+          logDebug(
+            navColliders.length
+              ? 'Caminar: chocando contra las mallas "_col".'
+              : 'Caminar sin mallas "_col": se usa el modelo visible (mas lento, con fugas en paredes finas).',
+            navColliders.length ? 'ok' : 'error'
+          );
+        }
+      });
 
       const _navM = new THREE.Matrix4();
       const _navT = new THREE.Matrix4();
@@ -2683,7 +2731,6 @@
           if (navKeys.has('ArrowLeft')) navState.yaw += NAV_TURN_RATE * dt;
           if (navKeys.has('ArrowRight')) navState.yaw -= NAV_TURN_RATE * dt;
           const speedMps = NAV_BASE_SPEED_MPS * navSpeedMul * (navKeys.has('ShiftLeft') || navKeys.has('ShiftRight') ? 4 : 1);
-          const step = speedMps * navUnitsPerMeter * dt;
           const cy = Math.cos(navState.yaw);
           const sy = Math.sin(navState.yaw);
           let fwd = 0, side = 0, vert = 0;
@@ -2691,13 +2738,134 @@
           if (navKeys.has('KeyS') || navKeys.has('ArrowDown')) fwd -= 1;
           if (navKeys.has('KeyD')) side += 1;
           if (navKeys.has('KeyA')) side -= 1;
-          if (navKeys.has('KeyE') || navKeys.has('Space')) vert += 1;
-          if (navKeys.has('KeyQ') || navKeys.has('KeyC')) vert -= 1;
-          navState.pos.x += (cy * fwd + sy * side) * step;
-          navState.pos.y += (sy * fwd - cy * side) * step;
-          navState.pos.z += vert * step;
+          if (navWalk) {
+            navWalkStep(Math.min(dt, 0.05), fwd, side, navKeys.has('Space'), speedMps);
+          } else {
+            if (navKeys.has('KeyE') || navKeys.has('Space')) vert += 1;
+            if (navKeys.has('KeyQ') || navKeys.has('KeyC')) vert -= 1;
+            const step = speedMps * navUnitsPerMeter * dt;
+            navState.pos.x += (cy * fwd + sy * side) * step;
+            navState.pos.y += (sy * fwd - cy * side) * step;
+            navState.pos.z += vert * step;
+          }
+        }
+        navApplyMatrix();
+      }
+
+      // ---- Modo CAMINAR: choque con paredes, suelo, escaleras y gravedad ----
+      // Todo en espacio del modelo, con medidas reales convertidas por
+      // navUnitsPerMeter. Rayos contra las mallas "_col" (o, sin ellas,
+      // contra el modelo visible: mas lento y con mas fugas).
+      const NAV_RADIUS_M = 0.3;   // "grosor" del cuerpo: distancia minima a una pared
+      const NAV_STEP_M = 0.45;    // escalon maximo que se sube andando
+      const NAV_GRAVITY = 20;     // m/s2
+      const NAV_JUMP_MPS = 6;
+      let navWalk = false;
+      let navVz = 0;              // velocidad vertical, m/s
+      let navGrounded = false;
+      const navSafePos = new THREE.Vector3();
+      const _navRay = new THREE.Raycaster();
+      const _navO = new THREE.Vector3();
+      const _navD = new THREE.Vector3();
+      const _navInv = new THREE.Matrix4();
+      const _navDown = new THREE.Vector3(0, 0, -1);
+
+      // Rayo en espacio del modelo -> {dist, normal} en unidades del modelo.
+      function navCast(origin, dir, far) {
+        const mw = loadedModel.matrixWorld;
+        const s = NAV_WORLD_PER_METER / navUnitsPerMeter;
+        _navO.copy(origin).applyMatrix4(mw);
+        _navD.copy(dir).transformDirection(mw);
+        _navRay.set(_navO, _navD);
+        _navRay.near = 0;
+        _navRay.far = far * s;
+        const targets = navColliders.length ? navColliders : [loadedModel];
+        const h = _navRay.intersectObjects(targets, true).find((x) =>
+          x.object.isMesh && !isCutterMesh(x.object) && !isShadowPlane(x.object));
+        if (!h) return null;
+        _navInv.copy(mw).invert();
+        const normal = (h.face ? h.face.normal.clone() : new THREE.Vector3(0, 0, 1))
+          .transformDirection(h.object.matrixWorld)
+          .transformDirection(_navInv);
+        return { dist: h.distance / s, normal };
+      }
+
+      function navWalkStep(dt, fwd, side, wantJump, speedMps) {
+        const upm = navUnitsPerMeter;
+        const eye = NAV_EYE_HEIGHT_M * upm;
+        const step = NAV_STEP_M * upm;
+        const radius = NAV_RADIUS_M * upm;
+        const pos = navState.pos;
+        const prevX = pos.x;
+        const prevY = pos.y;
+        const moving = fwd !== 0 || side !== 0;
+
+        // 1) Horizontal: rayos a rodilla (por encima de un escalon), cintura
+        // y cabeza. Si chocan, se avanza hasta el radio del cuerpo y el
+        // resto del paso se desliza a lo largo de la pared.
+        if (moving) {
+          const cy = Math.cos(navState.yaw);
+          const sy = Math.sin(navState.yaw);
+          const md = new THREE.Vector3(cy * fwd + sy * side, sy * fwd - cy * side, 0).normalize();
+          let len = speedMps * upm * dt;
+          for (let iter = 0; iter < 2 && len > 1e-9; iter++) {
+            let nearest = null;
+            for (const h of [-eye + step * 1.05, -eye * 0.5, -0.15 * upm]) {
+              const hit = navCast(new THREE.Vector3(pos.x, pos.y, pos.z + h), md, len + radius);
+              if (hit && (!nearest || hit.dist < nearest.dist)) nearest = hit;
+            }
+            if (!nearest) { pos.x += md.x * len; pos.y += md.y * len; break; }
+            const n = new THREE.Vector3(nearest.normal.x, nearest.normal.y, 0);
+            if (n.lengthSq() < 1e-8) break;
+            n.normalize();
+            if (n.dot(md) > 0) n.negate(); // la normal debe oponerse al avance
+            const adv = Math.min(len, Math.max(0, nearest.dist - radius));
+            pos.x += md.x * adv;
+            pos.y += md.y * adv;
+            const rem = md.clone().multiplyScalar(len - adv);
+            rem.addScaledVector(n, -rem.dot(n));
+            len = rem.length();
+            if (len < 1e-9) break;
+            md.copy(rem).normalize();
+          }
         }
 
+        // 2) Vertical: salto, o seguir el suelo a 1.83 m de altura de ojos
+        // (sube escalones de hasta NAV_STEP_M, baja los que haya, y cae si
+        // no hay suelo).
+        if (wantJump && navGrounded) { navVz = NAV_JUMP_MPS; navGrounded = false; }
+        if (navVz > 0) {
+          pos.z += navVz * upm * dt;
+          navVz -= NAV_GRAVITY * dt;
+        } else if (!(navGrounded && !moving)) {
+          const far = eye + step + Math.max(0, -navVz) * upm * dt + 0.05 * upm;
+          const hit = navCast(pos, _navDown, far);
+          if (hit) {
+            const delta = eye - hit.dist; // >0: hay que subir; <0: el suelo esta mas abajo
+            if (delta > step + 1e-6) {
+              pos.x = prevX; pos.y = prevY; // escalon demasiado alto: no se avanza
+            } else if (delta >= -step) {
+              pos.z += delta > 0 ? delta * Math.min(1, 20 * dt) : delta;
+              navVz = 0;
+              navGrounded = true;
+              navSafePos.copy(pos);
+            } else {
+              navGrounded = false;
+              navVz -= NAV_GRAVITY * dt;
+              const target = pos.z + delta;
+              pos.z = Math.max(target, pos.z + navVz * upm * dt);
+              if (pos.z <= target + 1e-9) { navVz = 0; navGrounded = true; navSafePos.copy(pos); }
+            }
+          } else {
+            navGrounded = false;
+            navVz -= NAV_GRAVITY * dt;
+            pos.z += navVz * upm * dt;
+            if (pos.z < navSafePos.z - 300 * upm) { pos.copy(navSafePos); navVz = 0; } // fuera del mapa
+          }
+        }
+      }
+
+      function navApplyMatrix() {
         // Base de la camara en espacio del modelo: derecha, arriba, delante.
         const cp = Math.cos(navState.pitch);
         _navF.set(cp * Math.cos(navState.yaw), cp * Math.sin(navState.yaw), Math.sin(navState.pitch));
@@ -3279,6 +3447,7 @@
       function resetModelState() {
         exitNavigation();
         navPoints = [];
+        navColliders.length = 0;
         renderNavPanel();
         if (mixer) mixer.stopAllAction();
         mixer = null;
@@ -3347,6 +3516,7 @@
           loadedModel.updateMatrixWorld(true);
           // Puntos de navegacion: ANTES de calibrar (necesitan el espacio
           // local del modelo sin escalar) y retira los Empties "pt…".
+          setupNavColliders(loadedModel);
           const navResult = extractNavPoints(loadedModel);
           navPoints = navResult.points;
           navUnitsPerMeter = navResult.unitsPerMeter;
