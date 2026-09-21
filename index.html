@@ -330,6 +330,11 @@
           <label><input type="checkbox" id="navWalkChk" /> Caminar (colisiones, escaleras, gravedad)</label>
         </div>
         <div class="row">
+          <label for="navFovSlider">Campo de visión</label>
+          <input type="range" id="navFovSlider" min="45" max="110" step="1" value="75" style="flex:1;margin:0 8px" />
+          <span id="navFovVal">75°</span>
+        </div>
+        <div class="row">
           <span>Velocidad</span>
           <span id="navSpeedVal">x1</span>
           <button id="navExitBtn" type="button" disabled>Salir de la navegación</button>
@@ -1190,6 +1195,18 @@
       // giros (correccion vertical, raton, mano) deben hacerse alrededor
       // de este punto - ver rotateAboutAttach.
       const markerAttachLocal = new THREE.Vector3();
+      // Giro base modelo -> ancla y giro del usuario (peonza). Se componen
+      // como cuaterniones (base * giro): con un giro base cualquiera, tocar
+      // solo un angulo de Euler ya no seria "girar sobre la vertical".
+      // markerRefQuat: orientacion de la placa "_marker_ref" en el modelo
+      // (null si no hay placa plana): manda sobre el checkbox.
+      const markerBaseQuat = new THREE.Quaternion();
+      let markerRefQuat = null;
+      const _spinQ = new THREE.Quaternion();
+      const _zAxis = new THREE.Vector3(0, 0, 1);
+      function setModelSpin(rad) {
+        loadedModel.quaternion.copy(markerBaseQuat).multiply(_spinQ.setFromAxisAngle(_zAxis, rad));
+      }
       // Por defecto gira alrededor del punto de enganche (la correccion
       // de marcador vertical debe conservar la calibracion); el giro del
       // usuario (raton/mano) pasa el CENTRO del modelo como pivote para
@@ -1197,17 +1214,25 @@
       function rotateAboutAttach(mutateRotation, pivot = markerAttachLocal) {
         if (!loadedModel) return;
         const s = loadedModel.scale.x;
-        const before = pivot.clone().applyEuler(loadedModel.rotation).multiplyScalar(s);
+        const before = pivot.clone().applyQuaternion(loadedModel.quaternion).multiplyScalar(s);
         mutateRotation();
-        const after = pivot.clone().applyEuler(loadedModel.rotation).multiplyScalar(s);
+        const after = pivot.clone().applyQuaternion(loadedModel.quaternion).multiplyScalar(s);
         loadedModel.position.add(before).sub(after);
         loadedModel.updateMatrix();
       }
       function applyVerticalMarkerCorrection() {
         if (!loadedModel) return;
-        rotateAboutAttach(() => {
-          loadedModel.rotation.x = localStorage.getItem('arMindarVerticalMarker') === '1' ? -Math.PI / 2 : 0;
-        });
+        if (markerRefQuat) {
+          // La placa "_marker_ref" dice como esta orientado el marcador: su
+          // eje X local es la derecha de la imagen, Y el arriba y Z la
+          // normal (hacia el observador), asi que el giro que lleva el
+          // modelo al espacio del ancla es la inversa de la de la placa.
+          markerBaseQuat.copy(markerRefQuat).invert();
+        } else {
+          markerBaseQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0),
+            localStorage.getItem('arMindarVerticalMarker') === '1' ? -Math.PI / 2 : 0);
+        }
+        rotateAboutAttach(() => setModelSpin(0));
       }
       // Guarda center/ratio de "_marker_scale_N" del modelo actual (o null
       // si usa "_marker_ref"/autoencuadre) para poder recalcular la
@@ -2341,7 +2366,7 @@
         displayScale = 1 / refWidth;
         model.scale.setScalar(displayScale);
         markerAttachLocal.copy(center);
-        model.position.copy(center).applyEuler(model.rotation).multiplyScalar(-displayScale);
+        model.position.copy(center).applyQuaternion(model.quaternion).multiplyScalar(-displayScale);
         model.updateMatrix();
         logDebug(
           `Calibrado con "_marker_scale_${ratio}": soporte=${getMarkerRealWidth().toFixed(3)}m -> ` +
@@ -2352,6 +2377,7 @@
 
       function applyMarkerRefCalibration(model) {
         markerScaleCalibration = null;
+        markerRefQuat = null;
         markerAttachLocal.set(0, 0, 0);
         let scaleRef = null;
         let scaleRatio = null;
@@ -2410,7 +2436,23 @@
         // origen desplazaria ese centro, y con el, el modelo entero.
         const center = new THREE.Vector3().setFromMatrixPosition(found.matrixWorld);
         const dims = [size.x, size.y, size.z].sort((a, b) => a - b);
-        const refWidth = dims[2]; // la dimension mayor = ancho real del target
+        let refWidth = dims[2]; // sin placa plana: la dimension mayor
+        // Placa plana (lo normal): su eje X local es el ANCHO de la imagen
+        // (una portada vertical es mas alta que ancha, y la unidad del
+        // ancla es el ancho, no el lado mayor) y su orientacion dice como
+        // esta colocado el marcador.
+        const wq = new THREE.Quaternion();
+        const ws = new THREE.Vector3();
+        found.matrixWorld.decompose(new THREE.Vector3(), wq, ws);
+        const gsz = found.geometry.boundingBox.getSize(new THREE.Vector3());
+        const plW = gsz.x * Math.abs(ws.x);
+        const plH = gsz.y * Math.abs(ws.y);
+        const plT = gsz.z * Math.abs(ws.z);
+        const isFlatPlane = plW > 0 && plH > 0 && plT <= 0.05 * Math.max(plW, plH);
+        if (isFlatPlane) {
+          refWidth = plW;
+          markerRefQuat = wq.clone();
+        }
 
         if (!(refWidth > 0)) {
           logDebug('"_marker_ref" tiene tamano nulo; se ignora la calibracion.', 'error');
@@ -2419,9 +2461,15 @@
           displayScale = 1 / refWidth;
           model.scale.setScalar(displayScale);
           markerAttachLocal.copy(center);
-          model.position.copy(center).applyEuler(model.rotation).multiplyScalar(-displayScale);
+          model.position.copy(center).applyQuaternion(model.quaternion).multiplyScalar(-displayScale);
           model.updateMatrix();
           logDebug(`Calibrado con "_marker_ref": ancho=${refWidth.toFixed(4)} -> escala=${displayScale.toFixed(4)}`, 'ok');
+          logDebug(
+            isFlatPlane
+              ? `Placa ${plW.toFixed(2)} x ${plH.toFixed(2)}: el ancho es su eje X local y su orientacion se aplica al modelo.`
+              : 'La referencia no es una placa plana: se usa su lado mayor como ancho y el checkbox "Marcador vertical" para la orientacion.',
+            isFlatPlane ? 'ok' : 'error'
+          );
         }
 
         // Ya ha cumplido su funcion: fuera de la escena para siempre, no
@@ -2561,7 +2609,7 @@
         const newScale = baseModelScale * k;
         const oldScale = loadedModel.scale.x;
         if (modelCenterLocal) {
-          const centerDir = modelCenterLocal.clone().applyEuler(loadedModel.rotation);
+          const centerDir = modelCenterLocal.clone().applyQuaternion(loadedModel.quaternion);
           loadedModel.position.addScaledVector(centerDir, oldScale - newScale);
         } else {
           loadedModel.position.copy(baseModelPosition).multiplyScalar(k).add(userOffset);
@@ -2629,6 +2677,8 @@
       let navSpeedMul = 1;
       let navFly = null;
       let navSavedNear = null;
+      let navSavedFov = null;
+      let navFov = parseFloat(localStorage.getItem('arMindarNavFov')) || 75; // MindAR usa 45: muy cerrado para interiores
       let navSavedHint = null;
       const navState = { pos: new THREE.Vector3(), yaw: 0, pitch: 0 };
       const navKeys = new Set();
@@ -2668,6 +2718,7 @@
         if (!navActive) {
           navActive = true;
           navSavedNear = camera.near;
+          navSavedFov = camera.fov;
           navSavedHint = hint.textContent;
           hint.textContent = NAV_HINT;
           // Fuera del ancla: MindAR reescribe anchor.group.matrix cada frame.
@@ -2711,12 +2762,22 @@
         shadowPlaneMeshes.forEach((m) => { m.visible = shadowsEnabled; });
         if (navSavedNear !== null) {
           camera.near = navSavedNear;
+          if (navSavedFov !== null) camera.fov = navSavedFov;
           camera.updateProjectionMatrix();
         }
         if (navSavedHint !== null) hint.textContent = navSavedHint;
         renderNavPanel();
       }
       navExitBtn.addEventListener('click', exitNavigation);
+      const navFovSlider = document.getElementById('navFovSlider');
+      const navFovVal = document.getElementById('navFovVal');
+      navFovSlider.value = navFov;
+      navFovVal.textContent = `${Math.round(navFov)}°`;
+      navFovSlider.addEventListener('input', () => {
+        navFov = parseFloat(navFovSlider.value);
+        navFovVal.textContent = `${Math.round(navFov)}°`;
+        localStorage.setItem('arMindarNavFov', String(navFov));
+      });
       const navWalkChk = document.getElementById('navWalkChk');
       navWalkChk.addEventListener('change', () => {
         navWalkChk.blur(); // que el teclado siga moviendo y Espacio no vuelva a marcar la casilla
@@ -2744,8 +2805,9 @@
 
         // Camara: el near/far de MindAR se reimpone en cada resize.
         const near = NAV_NEAR_M * NAV_WORLD_PER_METER;
-        if (camera.near !== near) {
+        if (camera.near !== near || camera.fov !== navFov) {
           camera.near = near;
+          camera.fov = navFov;
           camera.updateProjectionMatrix();
         }
 
@@ -2988,7 +3050,7 @@
         const dx = e.clientX - lastDragX;
         lastDragX = e.clientX;
         userRotZ += dx * 0.01;
-        rotateAboutAttach(() => { loadedModel.rotation.z = userRotZ; }, modelCenterLocal || markerAttachLocal);
+        rotateAboutAttach(() => setModelSpin(userRotZ), modelCenterLocal || markerAttachLocal);
       });
       window.addEventListener('mouseup', () => { isDraggingModel = false; });
 
@@ -3264,7 +3326,7 @@
         if (activeGesture?.type === 'palm' && loadedModel) {
           const angle = palmRollAngle(lm);
           userRotZ = activeGesture.startRotZ + (angle - activeGesture.startAngle) * ROTATE_GAIN;
-          rotateAboutAttach(() => { loadedModel.rotation.z = userRotZ; }, modelCenterLocal || markerAttachLocal);
+          rotateAboutAttach(() => setModelSpin(userRotZ), modelCenterLocal || markerAttachLocal);
 
           // Zoom acercando/alejando la mano de la camara: ratio del ancho
           // de palma actual/inicial por la escala inicial, misma logica de
@@ -3443,7 +3505,7 @@
         if (!loadedModel) return;
         userRotZ = 0;
         userOffset.set(0, 0, 0);
-        loadedModel.rotation.z = 0;
+        setModelSpin(0);
         displayScaleSlider.value = 1;
         displayScaleVal.textContent = '100%';
         loadedModel.position.copy(baseModelPosition);
