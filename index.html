@@ -2762,6 +2762,8 @@
         navActiveIndex = -1;
         navFly = null;
         navKeys.clear();
+        navLooking = false;
+        if (document.pointerLockElement === renderer.domElement) document.exitPointerLock();
         document.getElementById('container').classList.remove('navBg');
         if (loadedModel) {
           anchor.group.add(loadedModel);
@@ -3002,27 +3004,34 @@
       window.addEventListener('keyup', (e) => { navKeys.delete(e.code); });
       window.addEventListener('blur', () => navKeys.clear());
 
+      // Giro con el raton con Pointer Lock: sin esto, el cursor choca con
+      // el borde de la pantalla y el giro se para en seco justo ahi (mala
+      // experiencia al navegar). Con el puntero bloqueado el navegador
+      // oculta el cursor y da movementX/movementY SIN limite, girando
+      // indefinidamente aunque el raton fisico se quede sin sitio en la
+      // mesa (se puede levantar y volver a apoyar, como en un videojuego).
       let navLooking = false;
-      let navLastX = 0;
-      let navLastY = 0;
       document.addEventListener('mousedown', (e) => {
         if (!navActive || e.button !== 0) return;
         if (e.target.closest('#leftMenu')) return;
         navLooking = true;
-        navLastX = e.clientX;
-        navLastY = e.clientY;
+        renderer.domElement.requestPointerLock?.();
+      });
+      document.addEventListener('pointerlockchange', () => {
+        // El navegador tambien suelta el puntero solo (Esc, cambio de
+        // pestana...); hay que enterarse para no seguir "mirando" a ciegas.
+        if (document.pointerLockElement !== renderer.domElement) navLooking = false;
       });
       window.addEventListener('mousemove', (e) => {
         if (!navActive || !navLooking) return;
-        const dx = e.clientX - navLastX;
-        const dy = e.clientY - navLastY;
-        navLastX = e.clientX;
-        navLastY = e.clientY;
         if (navFly) return;
-        navState.yaw -= dx * NAV_MOUSE_LOOK;
-        navState.pitch = THREE.MathUtils.clamp(navState.pitch - dy * NAV_MOUSE_LOOK, -1.48, 1.48);
+        navState.yaw -= (e.movementX || 0) * NAV_MOUSE_LOOK;
+        navState.pitch = THREE.MathUtils.clamp(navState.pitch - (e.movementY || 0) * NAV_MOUSE_LOOK, -1.48, 1.48);
       });
-      window.addEventListener('mouseup', () => { navLooking = false; });
+      window.addEventListener('mouseup', () => {
+        navLooking = false;
+        if (document.pointerLockElement === renderer.domElement) document.exitPointerLock();
+      });
       window.addEventListener('resize', () => {
         // MindAR reasigna near/far en su propio "resize" (registrado antes).
         if (navActive) navStep(0);
