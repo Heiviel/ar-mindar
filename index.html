@@ -17,6 +17,10 @@
   }
   #container { width:100vw; height:100vh; position:relative; overflow:hidden; }
   #camBg { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+  /* Navegar: fondo neutro en vez del video de la camara real - queda raro
+     ver la habitacion detras de un modelo por el que estas "caminando". */
+  #container.navBg { background: linear-gradient(#5b6270 0%, #5b6270 55%, #34383f 55%, #34383f 100%); }
+  #container.navBg #camBg { visibility: hidden; }
   #startChoice {
     position:absolute; z-index:10; left:50%; top:50%; transform:translate(-50%,-50%);
     display:flex; flex-direction:column; align-items:center; gap:10px; max-width:min(320px, 86vw);
@@ -2721,6 +2725,10 @@
           navSavedFov = camera.fov;
           navSavedHint = hint.textContent;
           hint.textContent = NAV_HINT;
+          // Fondo neutro en vez del video real: queda raro ver la
+          // habitacion detras de un modelo por el que estas "caminando",
+          // y ademas MindAR deja de necesitar el video para nada aqui.
+          document.getElementById('container').classList.add('navBg');
           // Fuera del ancla: MindAR reescribe anchor.group.matrix cada frame.
           scene.add(loadedModel);
           loadedModel.matrixAutoUpdate = false;
@@ -2754,6 +2762,7 @@
         navActiveIndex = -1;
         navFly = null;
         navKeys.clear();
+        document.getElementById('container').classList.remove('navBg');
         if (loadedModel) {
           anchor.group.add(loadedModel);
           loadedModel.matrixAutoUpdate = true;
