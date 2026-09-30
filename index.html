@@ -140,6 +140,31 @@
     #leftMenu .group { padding:6px; gap:6px; }
   }
 
+  /* Modo Suelo en movil: el panel lateral (86vw x pantalla completa) tapaba
+     casi todo el modelo/camara en cuanto se abria. Aqui pasa a ser una hoja
+     que sube desde abajo, con un limite de altura, para poder ajustar
+     opciones sin perder de vista lo que hay delante. Solo aplica con la
+     clase "floorMode" en <body> (ver startFloorMode) - modo Marcador y
+     escritorio siguen igual que siempre. */
+  @media (max-width: 700px) {
+    body.floorMode #leftMenu {
+      left:0; right:0; top:auto; bottom:0; width:100%; height:auto;
+      border-right:none; border-top:1px solid rgba(80,180,255,.35);
+      border-radius:14px 14px 0 0;
+      transform:translateY(0);
+    }
+    /* Solo se repliega un poco (queda una pestaña de 40px, con el tirador
+       encima siempre visible) - nunca desaparece del todo: en este modo
+       es el unico acceso al menu, sin el "☰" flotando aparte. */
+    body.floorMode #leftMenu.collapsed { transform:translateY(calc(100% - 40px)); backdrop-filter:none; }
+    body.floorMode #leftMenuScroll { height:auto; max-height:42vh; padding:10px 10px 16px; gap:8px; }
+    body.floorMode #leftMenu .group { padding:6px; gap:6px; }
+    body.floorMode #menuToggle {
+      right:auto; left:50%; top:-36px; transform:translateX(-50%);
+      width:72px; height:36px; border-radius:10px 10px 0 0; border-bottom:none;
+    }
+  }
+
   #clipPanel {
     color:#fff; display:flex; flex-direction:column; gap:8px;
   }
@@ -3896,6 +3921,12 @@
     let currentModelClickHandler = null;
 
     async function startFloorMode() {
+      // Marca para el CSS de movil (ver "body.floorMode #leftMenu" mas
+      // arriba): solo modo Suelo, que solo se llega a ejecutar en
+      // Android/Chrome con ARCore (startFloorBtn se deshabilita si WebXR
+      // "immersive-ar" no esta soportado) - no hace falta detectar el SO
+      // aparte, "modo Suelo + pantalla estrecha" ya implica Android movil.
+      document.body.classList.add('floorMode');
       document.getElementById('startChoice')?.remove();
       clearPendingResume(); // entrada nueva o reanudacion ya en marcha: no hace falta conservarlo
       hint.hidden = false;
