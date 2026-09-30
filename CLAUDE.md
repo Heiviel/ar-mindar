@@ -1,5 +1,41 @@
 # Instrucciones del proyecto
 
+## Despliegue: dos repositorios (desde 2026-09-30)
+
+Ademas de GitHub, la empresa ha dado un repo de Azure DevOps para alojar la
+app (Vercel esta bloqueado por politica corporativa; Azure Static Web Apps
+personal se descarto tambien a favor de la infraestructura de la empresa):
+
+- **GitHub** (`origin`): `https://github.com/Heiviel/ar-mindar` — historial
+  completo de desarrollo, con hook de push automatico (ver mas abajo).
+- **Azure DevOps** (`azuredevops`): `https://dev.azure.com/DPD-DI/DPD_Webapp/_git/ARVision.Webapp.Frontend`
+  — repo corporativo con pipeline propio (`devops/azure-pipeline.yaml`,
+  extiende una plantilla compartida `DPD_Webapp/DPD.Webapp` con
+  `appName: arvision`). **Historial deliberadamente separado y minimo**:
+  no lleva todo el historial de iteraciones de GitHub, solo una foto del
+  estado actual de los archivos imprescindibles (index.html +
+  modelo/marcador de demo), para no ensuciar el repo del equipo. NUNCA
+  fusionar el historial completo de `origin` con este remoto (historias no
+  relacionadas — un merge/push directo se rechazaria o forzaria a un push
+  destructivo).
+
+**Como sincronizar cambios a Azure DevOps** (repetir cada vez que se quiera
+publicar ahi, no es automatico):
+```
+git fetch azuredevops main
+git branch -f corp-sync azuredevops/main
+git checkout corp-sync
+git checkout main -- index.html
+git checkout main -- models/bola.glb targets/bola.mind targets/bola.jpeg
+git add -A
+git commit -m "Actualiza el visor AR"
+git push azuredevops corp-sync:main
+git checkout main
+```
+Ajustar la lista de `git checkout main -- <archivo>` a lo que realmente haya
+cambiado — seguir siendo minimo (ver regla de abajo), no arrastrar
+documentacion ni archivos de prueba a este repo salvo que el usuario lo pida.
+
 ## Backup a GitHub
 
 Este repo tiene un hook `Stop` (`.claude/settings.json`) que hace commit + push
